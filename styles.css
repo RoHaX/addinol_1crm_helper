@@ -1,0 +1,140 @@
+body {
+	font-family: "Lucida Grande","Lucida Sans Unicode","Lucida Sans","Helvetica Neue","Segoe UI",Helvetica,Arial,sans-serif;
+	font-size: 12px;
+	/*font: normal 9px auto "Lucida Grande","Lucida Sans Unicode","Lucida Sans","Helvetica Neue","Segoe UI",Helvetica,Arial,sans-serif;*/
+	color: #4f6b72;
+	background: #E6EAE9;
+}
+
+a {
+	color: #009933;
+}
+
+a.gro {
+	font-size: 15px;
+	font-weight: bold;
+	color: #009933;
+	text-decoration: none;
+}
+
+li {
+		margin: 5px;
+		padding: 3px;
+		
+}
+
+a:hover {
+		color: #004000;	
+}
+
+caption {
+	padding: 0 0 5px 0;
+	width: 700px;	 
+	font: italic 11px;
+	text-align: right;
+}
+
+th {
+	/*font: bold 9px "Lucida Grande","Lucida Sans Unicode","Lucida Sans","Helvetica Neue","Segoe UI",Helvetica,Arial,sans-serif;*/
+	font-size: 12px;
+	font-weight: bold;
+	color: #fff;
+	border-right: 1px solid #C1DAD7;
+	border-bottom: 1px solid #C1DAD7;
+	border-top: 1px solid #C1DAD7;
+	letter-spacing: 2px;
+	text-transform: uppercase;
+	text-align: left;
+	padding: 1px 1px 1px 6px;
+	background: #4da6ff;
+}
+
+th.nobg {
+	border-top: 0;
+	border-left: 0;
+	border-right: 1px solid #C1DAD7;
+	background: none;
+}
+
+td {
+	font-size: 12px;
+	border-right: 1px solid #C1DAD7;
+	border-bottom: 1px solid #C1DAD7;
+	background: #fff;
+	padding: 1px 1px 1px 6px;
+	color: #4f6b72;
+}
+
+td.neg {
+	color: red;
+}
+
+select {
+	border: 1px solid #006600; 
+	padding: 3px 8px;  
+	font-weight: bold; 
+	border-radius: 5px; 
+	background-color: #009933; 
+	color: #fff;
+}
+select:hover {
+background-color: #666666;
+box-shadow: 0 0 1em #999999;
+}
+
+button {
+	border: 1px solid #006600; 
+	font-size: 12px; 
+	margin: 4px;
+	padding: 3px 8px; 
+	font-weight: bold; 
+	border-radius: 5px; 
+	background-color: #009933; 
+	color: #fff;
+}
+
+button:hover {
+background-color: #666666;
+box-shadow: 0 0 1em #999999;
+}
+
+div.blink {
+	background-color: #cce2b4;
+	border: 1px solid #008c46;
+	border-radius: 8px;
+	margin: 5px;
+	padding: 2px 5px;
+	width: 300px;
+}
+
+div.blink:hover {
+	background-color: #bdbdae;
+	border: 1px solid #424251;
+	border-radius: 8px;
+	margin: 5px;
+	padding: 2px 5px;
+	width: 300px;
+	box-shadow: 0 0 1em #999999;
+}
+
+/*
+td.alt {
+	background: #F5FAFA;
+	color: #797268;
+}
+
+th.spec {
+	border-left: 1px solid #C1DAD7;
+	border-top: 0;
+	background: #fff url(images/bullet1.gif) no-repeat;
+	font: bold 10px;
+}
+
+th.specalt {
+	border-left: 1px solid #C1DAD7;
+	border-top: 0;
+	background: #f5fafa url(images/bullet2.gif) no-repeat;
+	font: bold 8px;
+	color: #797268;
+}
+*/
