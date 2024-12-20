@@ -1,0 +1,81 @@
+<?php
+	include("db.inc.php");
+	db_open();
+?>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+<link href="styles.css" rel="stylesheet" type="text/css" />
+</head>
+<body>  
+<h1>Lagerstand</h1>
+
+
+<?php
+
+	$strSQL = "SELECT company_addresses.id, company_addresses.name as lagername FROM company_addresses INNER JOIN products_warehouses ON products_warehouses.warehouse_id = company_addresses.id
+	WHERE products_warehouses.deleted=0
+	GROUP BY company_addresses.id;";
+	
+	print "<form action='lagerstand.php' method='post'>\n";
+	print "\t<select name='formLager'>\n";
+	print "\t<option value=''>alle Lager</option>\n";
+	$result = db_query($strSQL);
+	while ($row = mysql_fetch_array($result, MYSQL_ASSOC)) {
+		print "\t<option value='".$row['id']."'>".$row['lagername']."</option>\n";
+	}
+	print "\t</select>\n";
+	print "<input type='submit' name='absenden' value='anzeigen'>\n";
+	print "</form>\n";
+	$strQuery = "";
+	if (isset($_POST['absenden'])){
+		if ($_POST['formLager'] == '') { 
+			$strQuery = "";
+		} else {
+			$strQuery = "AND company_addresses.id = '".$_POST['formLager']."'";
+		}
+	}
+	$strSQL = "SELECT products.name as productname, products.id as productid, products_warehouses.in_stock as lagerstand, company_addresses.name as lager, products_warehouses.deleted, products_warehouses.created_by, products_warehouses.product_id, products_warehouses.warehouse_id, products_warehouses.date_modified as aenderung, products_cstm.mindestbestand
+FROM products_cstm RIGHT JOIN (company_addresses INNER JOIN (products_warehouses INNER JOIN products ON products_warehouses.product_id = products.id) ON company_addresses.id = products_warehouses.warehouse_id) ON products_cstm.id_c = products.id
+WHERE (((products_warehouses.deleted)=0) ".$strQuery." AND ((products_warehouses.in_stock != 0) OR (products_cstm.mindestbestand != 0)))
+ORDER BY products.name;";
+	$result = db_query($strSQL);
+	print "\t<table>\n";
+	print "\t<tr><th>Produkt</th><th>Lagerstand</th><th>Lager</th><th>Mindestbestand</th><th>Änderungsdatum</th></tr>\n";
+	$mailtext = "\r\n";
+	$icount = 0;
+	while ($row = mysql_fetch_array($result, MYSQL_ASSOC)) {
+		print "\t<tr><td><a href='https://addinol-lubeoil.at/crm/index.php?module=ProductCatalog&action=DetailView&record=".$row['productid']."' target='_blank'>".$row['productname']."</a></td><td>".$row['lagerstand']."</td><td>".$row['lager']."</td>";
+		
+		if ($row['mindestbestand'] >= $row['lagerstand']) {
+			$negcls = " class='neg'";
+			$icount = $icount + 1;
+			$info = $row['mindestbestand']." *NACHBESTELLEN!";
+			$mailtext .= "Produkt: ".$row['productname']."\r\nLagerstand: ".$row['lagerstand']."\r\nLager: ".$row['lager']."\r\nMindestbestand: ".$row['mindestbestand']."\r\n";
+		} else {
+			$negcls = "";
+			$info = $row['mindestbestand'];
+		}
+		
+		print "<td".$negcls.">".$info."</td><td>".$row['aenderung']."</td></tr>\n";
+	}
+
+				
+?>
+</table>
+<?php
+
+	if ($icount > 0) {
+//h.egger@addinol-lubeoil.at
+//rh@bkh-kufstein.at
+/*
+	mail("h.egger@addinol-lubeoil.at",
+			"Es ist gegebenenfalls eine Lagerbestellung nötig",
+			"Geschätzte Geschäftsführung,\r\n\r\nhabe wieder mal im Lager nachgeschaut, es ergibt sich folgender Bestellvorschlag:\r\n ".$mailtext."\r\n\r\nHochachtungsvoll und untertänigst\r\nEuer Lagerheini\r\n\r\nPS: Bis auf weiters nehme ich Abstand von der Gründung eines Betriebsrates.",
+			"From: lagerheini@addinol-lubeoil.at");
+*/		
+	}
+		
+?>
+</body>
+</html>
