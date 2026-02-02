@@ -10,6 +10,7 @@
  
 <?php
 	$link = mysqli_connect('localhost', 'addinol_usr', 'lwT1e99~', 'addinol_crm');
+	mysqli_set_charset($link, "utf8");
 	
 
 if(isset($_GET['cid'])) {
@@ -17,7 +18,8 @@ if(isset($_GET['cid'])) {
 	$cid = $_GET['cid'];
 	$strSQLNotes = "SELECT description 
 		FROM notes 
-		WHERE name LIKE 'Hist%' AND account_id = '" . $cid . "'";
+		WHERE name LIKE 'Hist%' AND account_id = '" . $cid . "'
+		ORDER BY date_modified DESC, date_entered DESC";
 	
 	$iCount = 0;
 	$strNote = "";
@@ -25,7 +27,7 @@ if(isset($_GET['cid'])) {
 		while ($rowNote = mysqli_fetch_assoc($resultNotes)) {
 			
 			$strNote = $strNote.$rowNote['description'];
-			print nl2br(utf8_encode($rowNote['description']));
+			print nl2br($rowNote['description']);
 		}		
 	}	
 }

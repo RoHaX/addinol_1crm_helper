@@ -3,25 +3,37 @@
 	mysqli_set_charset($link, "utf8");
 	
 ?>
-<html>
+<!doctype html>
+<html lang="de">
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
-<script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rechnung / Zahlung bearbeiten</title>
 <link href="styles.css" rel="stylesheet" type="text/css" />
+<link href="assets/bootstrap/bootstrap.min.css" rel="stylesheet" />
+<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous">
 </head>
-<body>  
-
-	<div>
-		<h1>Rechnung / Zahlung bearbeiten</h1> 
-	</div>
+<body class="<?php echo isset($_GET['embed']) ? 'bg-white' : 'bg-light'; ?>">
+<?php if (!isset($_GET['embed'])) { ?>
+	<?php require_once __DIR__ . '/navbar.php'; ?>
+	<main class="container-fluid py-3">
+		<h1 class="h4 mb-3">Rechnung / Zahlung bearbeiten</h1>
+<?php } else { ?>
+	<main class="container-fluid py-2">
+<?php } ?>
 <?php
 	
 	/* Ausgangsrechnungen */
 	// 106581a5-7aef-7ddc-af5a-5b6d6c1dbfc2
 	
-	print "<form action='update_invoice.php' method='post'>
-			<input type='text' id='invoice_id' size='38' name='invoice_id' value=''>
-			<button type='submit' name='action' value='invoice'>Rechnung suchen</button>";
+	print "<form action='update_invoice.php' method='post' class='row g-2 align-items-end mb-3'>
+			<div class='col-12 col-md-4'>
+				<label class='form-label small text-muted' for='invoice_id'>Invoice ID</label>
+				<input class='form-control form-control-sm' type='text' id='invoice_id' name='invoice_id' value=''>
+			</div>
+			<div class='col-12 col-md-2'>
+				<button class='btn btn-primary btn-sm w-100' type='submit' name='action' value='invoice'>Rechnung suchen</button>
+			</div>";
 	print "</form>";
 	
 	if (isset($_POST['invoice_id']) or isset($_GET['invoice_id'])) {
@@ -98,7 +110,7 @@
 
 		$strSQL = "SELECT * FROM invoice WHERE id = '$invoice'";
 		echo $strSQL;
-		print "\t<table>\n";
+		print "\t<table class='table table-sm table-striped table-hover align-middle'>\n";
 		print "\t<tr><th width=300>Tabelle invoice Invoice_ID</th>
 		<th width=130>RE-Nummer</th>
 		<th width=60>Datum</th>
@@ -133,7 +145,7 @@
 		print $account;
 		$strSQL = "SELECT * FROM accounts WHERE id = '$account'";
 		
-		print "\t<table>\n";
+		print "\t<table class='table table-sm table-striped table-hover align-middle'>\n";
 		print "\t<tr><th width=300>Tabelle accounts</th>
 		<th width=200>Name</th>
 		<th width=60>Balance</th>
@@ -158,7 +170,7 @@
 		print "\t<br>\n";
 		
 		
-		print "\t<table>\n";
+		print "\t<table class='table table-sm table-striped table-hover align-middle'>\n";
 				
 		$strSQL = "SELECT * FROM invoices_payments WHERE invoice_id = '$invoice'";
 
@@ -199,13 +211,14 @@
 
 		print "\t</table>\n";
 	}
-	print "<button type='submit' name='action' value='eintragen'>eintragen</button>
+	print "<button class='btn btn-success btn-sm' type='submit' name='action' value='eintragen'>eintragen</button>
 			</form> ";
 
 	print "\t<br>\n";
 	print "\t<br>\n";
 	
 ?>
-
+	</main>
+	<script src="assets/bootstrap/bootstrap.bundle.min.js"></script>
 </body>
 </html>

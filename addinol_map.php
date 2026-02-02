@@ -3,166 +3,99 @@
 <head> 
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
   <title>Google Maps Multiple Markers</title> 
-  <script src="https://maps.google.com/maps/api/js?sensor=false" 
-          type="text/javascript"></script>
+  <link rel="stylesheet" href="assets/leaflet/leaflet.css" />
+  <script src="assets/leaflet/leaflet.js"></script>
 	<link href="styles.css" rel="stylesheet" type="text/css" />
+	<link href="assets/bootstrap/bootstrap.min.css" rel="stylesheet" />
+	<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous">
 </head> 
-<body>
+<body class="bg-light">
+<?php require_once __DIR__ . '/navbar.php'; ?>
+<main class="container-fluid py-3">
 <?php
-	$strBundesland = 'Tirol';
-	if (isset($_POST['absenden'])){
-		$strBundesland = $_POST['cmbBundesland'];	
-	}
-	$strFilter = " AND shipping_address_state = '$strBundesland' ";
+	$post = $_POST ?? [];
+	$hasPost = isset($post['absenden']);
+	$defaultState = 'Tirol';
+	$checked = function ($key) use ($post) {
+		return isset($post[$key]) && $post[$key] === 'on';
+	};
+	$checkedAny = function (array $keys) use ($post) {
+		foreach ($keys as $key) {
+			if (isset($post[$key]) && $post[$key] === 'on') {
+				return true;
+			}
+		}
+		return false;
+	};
 ?>		
-  <div>
-		<form action='addinol_map.php' method='post'>
-			<b>Bundesland:</b>
+  <div class="card shadow-sm mb-3">
+		<div class="card-body">
+		<form action='addinol_map.php' method='post' class="d-flex flex-wrap gap-2 align-items-center" id="map-filter-form">
+			<span class="fw-semibold">Bundesland:</span>
 			
 				
 <?php		
-		if ($_POST['chkAlle']=='on') {
-			print "<label><input type='checkbox' name='chkAlle' checked><b>Alle</b></label>";
-		} else {
-			print "<label><input type='checkbox' name='chkAlle'><b>Alle</b></label>";
-		}
+		$allStates = $checked('chkAlle');
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkAlle' ".($allStates ? "checked" : "")."><span class='form-check-label fw-semibold'>Alle</span></label>";
 		
-		$strFilter = "AND (";
-		$strTmp = "";
-		if ($_POST['chkTirol']=='on') {
-			$strTmp = "checked";
-			$strFilter .= " shipping_address_state = 'Tirol' ";
-		}			
-		print "<label><input type='checkbox' name='chkTirol' $strTmp>Tirol</label>";
+		$states = [];
+		$tirolChecked = $checked('chkTirol') || (!$hasPost);
+		if ($tirolChecked) { $states[] = $defaultState; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkTirol' ".($tirolChecked ? "checked" : "")."><span class='form-check-label'>Tirol</span></label>";
 		
+		if ($checked('chkVorarlberg')) { $states[] = "Vorarlberg"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkVorarlberg' ".($checked('chkVorarlberg') ? "checked" : "")."><span class='form-check-label'>Vorarlberg</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkVorarlberg']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-			$strFilter .= " shipping_address_state = 'Vorarlberg' ";
-		}			
-		print "<label><input type='checkbox' name='chkVorarlberg' $strTmp>Vorarlberg</label>";
+		if ($checked('chkSalzburg')) { $states[] = "Salzburg"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkSalzburg' ".($checked('chkSalzburg') ? "checked" : "")."><span class='form-check-label'>Salzburg</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkSalzburg']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Salzburg' ";
-		}			
-		print "<label><input type='checkbox' name='chkSalzburg' $strTmp>Salzburg</label>";
+		if ($checked('chkOberösterreich')) { $states[] = "Oberösterreich"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkOberösterreich' ".($checked('chkOberösterreich') ? "checked" : "")."><span class='form-check-label'>Oberösterreich</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkOberösterreich']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Oberösterreich' ";
-		}			
-		print "<label><input type='checkbox' name='chkOberösterreich' $strTmp>Oberösterreich</label>";
+		if ($checkedAny(['chkKärnten','chkKaernten'])) { $states[] = "Kärnten"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkKaernten' ".($checkedAny(['chkKärnten','chkKaernten']) ? "checked" : "")."><span class='form-check-label'>Kärnten</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkKärnten']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Kärnten' ";
-		}			
-		print "<label><input type='checkbox' name='chkKärnten' $strTmp>Kärnten</label>";
+		if ($checked('chkNiederösterreich')) { $states[] = "Niederösterreich"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkNiederösterreich' ".($checked('chkNiederösterreich') ? "checked" : "")."><span class='form-check-label'>Niederösterreich</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkNiederösterreich']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Niederösterreich' ";
-		}			
-		print "<label><input type='checkbox' name='chkNiederösterreich' $strTmp>Niederösterreich</label>";
-		
-		$strTmp = "";
-		if ($_POST['chkSteiermark']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Steiermark' ";
-		}			
-		print "<label><input type='checkbox' name='chkSteiermark' $strTmp>Steierer</label>";
+		if ($checked('chkSteiermark')) { $states[] = "Steiermark"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkSteiermark' ".($checked('chkSteiermark') ? "checked" : "")."><span class='form-check-label'>Steierer</span></label>";
 				
-		$strTmp = "";
-		if ($_POST['chkBurgenland']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Burgenland' ";
-		}			
-		print "<label><input type='checkbox' name='chkBurgenland' $strTmp>Burgenland</label>";
+		if ($checked('chkBurgenland')) { $states[] = "Burgenland"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkBurgenland' ".($checked('chkBurgenland') ? "checked" : "")."><span class='form-check-label'>Burgenland</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkWien']=='on') {
-			$strTmp = "checked";
-			if ($strFilter <> "AND (") { 
-				$strFilter .= " OR";
-			};
-
-			$strFilter .= " shipping_address_state = 'Wien' ";
-		}			
-		$strFilter .= ") ";
-		print "<label><input type='checkbox' name='chkWien' $strTmp>Wien</label>";
+		if ($checked('chkWien')) { $states[] = "Wien"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkWien' ".($checked('chkWien') ? "checked" : "")."><span class='form-check-label'>Wien</span></label>";
 		
-		if ($_POST['chkAlle']=='on') {
+		if ($allStates || (!$hasPost && empty($states)) || $checked('chkAlle')) {
 			$strFilter = "";
+		} else {
+			$stateParts = [];
+			foreach ($states as $state) {
+				if ($state === 'Kärnten') {
+					$stateParts[] = "(shipping_address_state = 'Kärnten' OR shipping_address_state = 'Kaernten')";
+					continue;
+				}
+				if ($state === 'Steiermark') {
+					$stateParts[] = "(shipping_address_state = 'Steiermark' OR shipping_address_state = 'Steierer')";
+					continue;
+				}
+				$stateParts[] = "shipping_address_state = '".$state."'";
+			}
+			$strFilter = $stateParts ? "AND (" . implode(" OR ", $stateParts) . ") " : "";
 		}
 		
-		print "&nbsp;&nbsp;&nbsp;&nbsp;<b>Status:</b> ";
-		$strFilterStatus = "AND (";
+		print "<span class='fw-semibold ms-3'>Status:</span> ";
+		$statuses = [];
 		
-		$strTmp = "";
-		if ($_POST['chkCustomer']=='on') {
-			$strTmp = "checked";
-			if ($strFilterStatus <> "AND (") { 
-				$strFilterStatus .= " OR";
-			};
-
-			$strFilterStatus .= " account_type = 'Customer' ";
-		}			
-		print "<label><input type='checkbox' name='chkCustomer' $strTmp>Kunde</label>";
+		if ($checked('chkCustomer')) { $statuses[] = "account_type = 'Customer'"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkCustomer' ".($checked('chkCustomer') ? "checked" : "")."><span class='form-check-label'>Kunde</span></label>";
 				
-		$strTmp = "";
-		if ($_POST['chkProspect']=='on') {
-			$strTmp = "checked";
-			if ($strFilterStatus <> "AND (") { 
-				$strFilterStatus .= " OR";
-			};
-
-			$strFilterStatus .= " account_type = 'Prospect' ";
-		}			
-		print "<label><input type='checkbox' name='chkProspect' $strTmp>Zielkunde</label>";
+		if ($checked('chkProspect')) { $statuses[] = "account_type = 'Prospect'"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkProspect' ".($checked('chkProspect') ? "checked" : "")."><span class='form-check-label'>Zielkunde</span></label>";
 		
-		$strTmp = "";
-		if ($_POST['chkAnalyst']=='on') {
-			$strTmp = "checked";
-			if ($strFilterStatus <> "AND (") { 
-				$strFilterStatus .= " OR";
-			};
-
-			$strFilterStatus .= " account_type = 'Analyst' ";
-		}			
-		print "<label><input type='checkbox' name='chkAnalyst' $strTmp>Stammkunde</label>";
+		if ($checked('chkAnalyst')) { $statuses[] = "account_type = 'Analyst'"; }
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkAnalyst' ".($checked('chkAnalyst') ? "checked" : "")."><span class='form-check-label'>Stammkunde</span></label>";
 /*		
 		$strTmp = "";
 		if ($_POST['chkSupplier']=='on') {
@@ -187,32 +120,29 @@
 		print "<label><input type='checkbox' name='chkCompetitor' $strTmp>Mitbewerber</label>";
 	
 	*/
-		$strTmp = "";
-		if ($_POST['chkOther']=='on') {
-			$strTmp = "checked";
-			if ($strFilterStatus <> "AND (") { 
-				$strFilterStatus .= " OR";
-			};
-
-			$strFilterStatus .= " account_type = 'Supplier' OR account_type = 'Competitor' OR account_type = 'Other' OR account_type = '' ";
+		if ($checked('chkOther')) {
+			$statuses[] = "account_type = 'Supplier' OR account_type = 'Competitor' OR account_type = 'Other' OR account_type = ''";
 		}			
-		$strFilterStatus .= ") ";
-		print "<label><input type='checkbox' name='chkOther' $strTmp>Andere</label>";
+		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkOther' ".($checked('chkOther') ? "checked" : "")."><span class='form-check-label'>Andere</span></label>";
+
+		$strFilterStatus = $statuses ? "AND (" . implode(" OR ", $statuses) . ") " : "";
 	
 				
-		if ($_POST['txtPLZ']=='') {
-			print "&nbsp;&nbsp;&nbsp;<label>PLZ:</label><input type='text' size='6' name='txtPLZ'>";
+		$plz = isset($post['txtPLZ']) ? $post['txtPLZ'] : '';
+		if ($plz === '') {
+			print "<span class='ms-3'><label class='me-1'>PLZ:</label><input class='form-control form-control-sm d-inline-block' style='width:90px' type='text' name='txtPLZ'></span>";
 			$strFilterPLZ = "";
 		} else {			
-			print "&nbsp;&nbsp;&nbsp;<label>PLZ:</label><input type='text' size='6' name='txtPLZ' value='".$_POST['txtPLZ']."'>";
-			$strFilterPLZ = " AND shipping_address_postalcode LIKE '".$_POST['txtPLZ']."%' ";
+			print "<span class='ms-3'><label class='me-1'>PLZ:</label><input class='form-control form-control-sm d-inline-block' style='width:90px' type='text' name='txtPLZ' value='".$plz."'></span>";
+			$strFilterPLZ = " AND shipping_address_postalcode LIKE '".$plz."%' ";
 		}
 		
 		
 		
 ?>			
-			<input type='submit' name='absenden' value='anzeigen'>
+			<button class='btn btn-primary btn-sm ms-2' type='submit' name='absenden' value='anzeigen'>anzeigen</button>
 		</form>
+		</div>
   </div>
   <div id="map" style="border: 2px solid #3872ac;min-height: 700px"></div>
 
@@ -253,53 +183,47 @@ var locations = [
 ?>
 ];
 	
-	var bounds = new google.maps.LatLngBounds();
-    var map = new google.maps.Map(document.getElementById('map'), {
-      zoom: 7,
-      center: new google.maps.LatLng(47.26, 11.44),
-      mapTypeId: google.maps.MapTypeId.ROADMAP
-    });
+	var map = L.map('map').setView([47.26, 11.44], 7);
+	L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+		maxZoom: 19,
+		attribution: '&copy; OpenStreetMap contributors'
+	}).addTo(map);
+	var bounds = L.latLngBounds([]);
+	var marker, i;
+	var iconCache = {};
 
-    var infowindow = new google.maps.InfoWindow();
-	
-    var marker, i;
-
-    for (i = 0; i < locations.length; i++) {  
+	for (i = 0; i < locations.length; i++) {
 		var title = locations[i][0];
 		var address = locations[i][4];
 		var urlcrm = locations[i][5];
 		var cid = locations[i][6];
-		
-		marker = new google.maps.Marker({
-			icon: locations[i][3],
-			position: new google.maps.LatLng(locations[i][1], locations[i][2]),
-			map: map,
-			title: title,
-			address: address,
-			url: urlcrm,
-			animation: google.maps.Animation.DROP
-		});
-		//infoWindow(marker, map, title, address, url);
+		var lat = parseFloat(locations[i][1]);
+		var lng = parseFloat(locations[i][2]);
+		if (isNaN(lat) || isNaN(lng)) {
+			continue;
+		}
+		var iconPath = locations[i][3];
+		if (!iconCache[iconPath]) {
+			iconCache[iconPath] = L.icon({
+				iconUrl: iconPath,
+				iconSize: [24, 24],
+				iconAnchor: [12, 24],
+				popupAnchor: [0, -22]
+			});
+		}
+		marker = L.marker([lat, lng], { icon: iconCache[iconPath] }).addTo(map);
+		var html1 = "<div style='max-width: 860px;'><h3>" + title + "</h3><p><iframe width='820' height='240' name='notiz' style='border:1px solid lightgrey;' src='notiz.php?cid=" + cid + "'></iframe></a></p><p><a href='https://www.openstreetmap.org/search?query=" + encodeURIComponent(address) + "' target='_blank'>OpenStreetMap</a>&nbsp;&nbsp;<a href='updcoord.php?address=" + address + "&cid=" + cid + "' target='_blank'>update</a><br></div><a href='" + urlcrm + "' target='_blank'>1CRM</a></p></div>";
+		marker.bindPopup(html1, { maxWidth: 900, minWidth: 700 });
+		bounds.extend([lat, lng]);
+	}
 
-		bounds.extend(marker.getPosition());
-		map.fitBounds(bounds);
-	  
-		google.maps.event.addListener(marker, 'click', (function(marker, i) {
-			return function() {
-				var title = locations[i][0];
-				var address = locations[i][4];
-				var urlcrm = locations[i][5];
-				var cid = locations[i][6];				
-				var html1 = "<div><h3>" + title + "</h3><p><iframe width='600' height='200' name='notiz' style='border:1px solid lightgrey;' src='notiz.php?cid=" + cid + "'></iframe></a></p><p><a href='https://www.google.at/maps/place/" + address + "' target='_blank'>GoogleMaps</a>&nbsp;&nbsp;<a href='updcoord.php?address=" + address + "&cid=" + cid + "' target='_blank'>update</a><br></div><a href='" + urlcrm + "' target='_blank'>1CRM</a></p></div>";
-				infowindow.setContent(html1);
-				infowindow.open(map, marker);
-			}
-		})(marker, i));
+	if (bounds.isValid()) {
+		map.fitBounds(bounds, { padding: [20, 20] });
 	}
 	
 
   </script>
-  <div>
+  <div class="mt-3">
 <?php
 
 	print "Zähler: ".$iCount;
@@ -309,7 +233,7 @@ var locations = [
 		LEFT JOIN accounts_cstm ON accounts.id = accounts_cstm.id_c 
 		WHERE longitude = '' LIMIT 1000";
 
-	print "<table>";
+	print "<table class='table table-sm table-striped'>";
 	if ($result = mysqli_query($link, $strSQL)) 
 	{
 		while ($row = mysqli_fetch_assoc($result)) {		
@@ -372,6 +296,19 @@ if(isset($_GET['address']))
 	print $result;
 	}
 ?>
-</div>
+  </div>
+  <script src="assets/bootstrap/bootstrap.bundle.min.js"></script>
+  <script>
+  (function () {
+    var form = document.getElementById('map-filter-form');
+    if (!form) return;
+    form.querySelectorAll('.filter-refresh').forEach(function (el) {
+      el.addEventListener('change', function () {
+        form.submit();
+      });
+    });
+  })();
+  </script>
+</main>
 </body>
 </html>
