@@ -43,12 +43,12 @@
 		WHERE invoice.amount_due <> '0.00'
 		ORDER BY invoice.invoice_date;";
 	
-	print "<div class='card shadow-sm'>\n";
+print "<div class='card shadow-sm mx-auto' style='max-width: 1200px;'>\n";
 	print "<div class='card-body'>\n";
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='offene-rechnungen-table' class='table table-sm table-striped table-hover align-middle'>\n";
-	print "\t<thead class='table-light'><tr><th>CRM</th><th>Kunde</th><th>RE-Nummer</th><th>Datum</th><th>Amount</th><th>Offen</th><th>Offen USD</th><th></th><th></th></tr></thead>\n";
-	print "\t<tfoot class='table-light'><tr><th>CRM</th><th>Kunde</th><th>RE-Nummer</th><th>Datum</th><th>Amount</th><th>Offen</th><th>Offen USD</th><th></th><th></th></tr></tfoot>\n";
+print "\t<thead class='table-light'><tr><th>CRM</th><th>Kunde</th><th>RE-Nummer</th><th>Datum</th><th>Fällig</th><th>Offen</th><th></th><th></th></tr></thead>\n";
+print "\t<tfoot class='table-light'><tr><th>CRM</th><th>Kunde</th><th>RE-Nummer</th><th>Datum</th><th>Fällig</th><th>Offen</th><th></th><th></th></tr></tfoot>\n";
 	print "\t<tbody>\n";
 
 	if ($result = mysqli_query($link, $strSQL)) 
@@ -59,12 +59,14 @@
 			print "\t<tr>
 			<td><a class='btn btn-sm btn-outline-secondary' href='https://addinol-lubeoil.at/crm/index.php?module=Invoice&action=DetailView&record=".$invoiceId."' target='_blank'>CRM</a></td>
 			<td>".$row['kundenname']."</td>
-			<td>".$row['prefix'].$row['invoice_number']."</td><td>".$row['invoice_date']."</td>
-			<td align='right'>".number_format($row['amount'], 2, ',', '.')."</td>
-			<td align='right'>".number_format($row['amount_due'], 2, ',', '.')."</td>
-			<td align='right'>".number_format($row['amount_due_usdollar'], 2, ',', '.')."</td>
-			<td><button type='button' class='btn btn-sm btn-outline-primary rechnung-details' data-bs-toggle='modal' data-bs-target='#rechnungDetailModal' data-invoice-id='".$invoiceId."'>Detail</button></td>
-			<td>";
+			<td>".$row['prefix'].$row['invoice_number']."</td><td>".$row['invoice_date']."</td>";
+			$dueDate = $row['due_date'];
+			$isOverdue = $dueDate !== '' && $dueDate < date('Y-m-d');
+			$dueClass = $isOverdue ? "text-danger fw-semibold" : "";
+			print "<td class='".$dueClass."'>".$dueDate."</td>";
+			print "<td align='right' data-order='".$row['amount_due']."'>".number_format($row['amount_due'], 2, ',', '.')."</td>";
+			print "<td><button type='button' class='btn btn-sm btn-outline-primary rechnung-details' data-bs-toggle='modal' data-bs-target='#rechnungDetailModal' data-invoice-id='".$invoiceId."'>Detail</button></td>";
+			print "<td>";
 			$amountDue = (float)$row['amount_due'];
 			if ($amountDue < 2 && $amountDue > -2) {
 				print "<div class='d-inline-flex align-items-center gap-2'>
@@ -119,8 +121,8 @@
 			var table = new DataTable('#offene-rechnungen-table', {
 				pageLength: 25,
 				lengthMenu: [10, 25, 50, 100],
-				order: [[3, 'desc']],
-				columnDefs: [{ targets: [0,7,8], orderable: false, searchable: false }],
+				order: [[4, 'asc']],
+				columnDefs: [{ targets: [0,6,7], orderable: false, searchable: false }],
 				language: {
 					search: 'Suche:',
 					lengthMenu: '_MENU_ Einträge pro Seite',

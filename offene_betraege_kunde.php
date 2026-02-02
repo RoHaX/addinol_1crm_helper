@@ -45,7 +45,7 @@
 		$strSQLInvoice = "SELECT * FROM invoice 
 			WHERE billing_account_id = '" . $account_id . "'
 			AND amount_due <> 0";
-		print "<div class='card shadow-sm'>\n";
+		print "<div class='card shadow-sm mx-auto' style='max-width: 1200px;'>\n";
 		print "<div class='card-body'>\n";
 		print "<div class='table-responsive'>\n";
 		print "\t<table id='offene-kunde-invoices' class='table table-sm table-striped table-hover align-middle'>\n";
@@ -61,7 +61,7 @@
 					<td><a class='btn btn-sm btn-outline-secondary' href='https://addinol-lubeoil.at/crm/index.php?module=Invoice&action=DetailView&record=".$rowI['id']."' target='_blank'>CRM</a></td>
 					<td>" . $rowI['prefix'] . $rowI['invoice_number'] . "</td>
 					<td class='" . $dueClass . "'>" . $rowI['due_date'] . "</td>
-					<td align='right'>".number_format($rowI['amount_due'], 2, ',', '.')."</td>
+					<td align='right' data-order='".$rowI['amount_due']."'>".number_format($rowI['amount_due'], 2, ',', '.')."</td>
 					<td><a class='btn btn-sm btn-outline-primary' href='update_invoice.php?invoice_id=".$rowI['id']."' target='_blank'>Detail</a></td>
 				</tr>\n";
 			}
@@ -75,7 +75,7 @@
 
 	$strSQL = "SELECT * FROM accounts WHERE balance <> '0.00' ORDER BY balance;";
 	
-	print "<div class='card shadow-sm'>\n";
+	print "<div class='card shadow-sm mx-auto' style='max-width: 1200px;'>\n";
 	print "<div class='card-body'>\n";
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='offene-betraege-table' class='table table-sm table-striped table-hover align-middle'>\n";
@@ -92,7 +92,7 @@
 			<td><a class='btn btn-sm btn-outline-secondary' href='https://addinol-lubeoil.at/crm/index.php?module=Accounts&action=DetailView&record=".$accountId."' target='_blank'>CRM</a></td>
 			<td><b>".$row['name']."</b></td>
 			<td>".$row['billing_address_city']."</td>
-			<td align='right'>".number_format($row['balance'], 2, ',', '.')."</td>
+			<td align='right' data-order='".$row['balance']."'>".number_format($row['balance'], 2, ',', '.')."</td>
 			<td><button type='button' class='btn btn-sm btn-outline-primary konto-details' data-bs-toggle='modal' data-bs-target='#kontoDetailModal' data-account-id='".$accountId."' data-account-name=\"".htmlspecialchars($row['name'], ENT_QUOTES)."\">Details</button></td>
 			<td>";
 			$balance = (float)$row['balance'];

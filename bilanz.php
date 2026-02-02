@@ -8,9 +8,11 @@
 	if (isset($_POST['absenden'])){
 		$strJahr = $_POST['cmbJahr'];
 		$strMonat = $_POST['cmbMonat'];
+		$strRange = $_POST['cmbRange'] ?? '36';
 	} else {
 		$strJahr = date('Y');
 		$strMonat = date('n');
+		$strRange = '36';
 	}
 	if ($strMonat == "*") {
 		$strQuery = "";
@@ -113,7 +115,7 @@
   google.charts.load('current', {'packages':['corechart']});
   google.charts.setOnLoadCallback(drawChart);
   function drawChart() {
-	var data = google.visualization.arrayToDataTable([
+	var rawData = [
 <?php
 	print "['Monat', 'Zahlungseingang', 'Eingangsrechnungen', 'Umsatz', 'Gewinn']";
 	$inhalt = array();
@@ -122,7 +124,9 @@
 		if (isset($inhalt['Jahr'])) {
 
 			print ",";
-			$Key  = $inhalt['Jahr'] . "-"  . $inhalt['Monat'];
+			$yearShort = substr($inhalt['Jahr'], -2);
+			$monthPadded = str_pad($inhalt['Monat'], 2, "0", STR_PAD_LEFT);
+			$Key  = $yearShort . "/" . $monthPadded;
 			$Zahlung = round($inhalt['Zahlung'] ?? 0, 2);
 			$Rechnung = round($inhalt['Rechnung'] ?? 0, 2);
 			$Umsatz = round($inhalt['Umsatz'] ?? 0, 2);
@@ -132,13 +136,19 @@
 		
 	}
 ?>	
-	]);
+	];
+	var useRange = "<?php echo $strRange; ?>" === "36";
+	if (useRange && rawData.length > 37) {
+		rawData = [rawData[0]].concat(rawData.slice(-36));
+	}
+	var data = google.visualization.arrayToDataTable(rawData);
 
 
 	var options = {
-	  title: 'Übersicht',
+	  title: useRange ? 'Übersicht (letzte 36 Monate)' : 'Übersicht (alle Jahre)',
 	  isStacked: false,
 	  legend: {position: 'top', maxLines: 3},
+	  chartArea: {left: 60, top: 40, width: '92%', height: '70%'},
 	  hAxis: {title: 'Monat',  textStyle: { fontSize: 8, color: '#444'}, titleTextStyle: { color: '#333'}},
 	  vAxis: {minValue: 0}
 	};
@@ -164,7 +174,9 @@
 	]);
 
 	var options = {
-	  title: 'Monatsumsatz'
+	  title: 'Monatsumsatz',
+	  chartArea: {left: 10, top: 40, width: '75%', height: '80%'},
+	  legend: {position: 'right'}
 	};
 
 	var chart = new google.visualization.PieChart(document.getElementById('piechart'));
@@ -182,8 +194,20 @@
 		<div class="row g-3">
 			<div class="col-12 col-xl-8">
 				<div class="card shadow-sm">
-					<div class="card-body">
-						<div id="chart_div" style="min-height: 350px;"></div>
+					<div class="card-header d-flex flex-wrap align-items-center justify-content-between gap-2">
+						<h2 class="h6 mb-0">Übersicht</h2>
+						<form action="bilanz.php" method="post" class="d-flex align-items-center gap-2 m-0">
+							<input type="hidden" name="cmbJahr" value="<?php echo htmlspecialchars($strJahr, ENT_QUOTES); ?>">
+							<input type="hidden" name="cmbMonat" value="<?php echo htmlspecialchars($strMonat, ENT_QUOTES); ?>">
+							<select name="cmbRange" class="form-select form-select-sm" onchange="this.form.submit()">
+								<option value="36" <?php if ($strRange === "36") echo 'selected'; ?>>letzte 36 Monate</option>
+								<option value="all" <?php if ($strRange === "all") echo 'selected'; ?>>alle Jahre</option>
+							</select>
+							<input type="hidden" name="absenden" value="anzeigen">
+						</form>
+					</div>
+					<div class="card-body p-2">
+						<div id="chart_div" style="min-height: 300px;"></div>
 					</div>
 				</div>
 			</div>
@@ -222,7 +246,7 @@
 				<div class="card shadow-sm">
 					<div class="card-body">
 						<form action='bilanz.php' method='post' class="row g-2 align-items-end">
-							<div class="col-12 col-md-4">
+							<div class="col-12 col-md-3">
 								<label class="form-label small text-muted" for="cmbJahr">Jahr</label>
 								<select id="cmbJahr" name='cmbJahr' class="form-select form-select-sm">
 				<?php
@@ -233,7 +257,7 @@
 				?>				
 								</select>
 							</div>
-							<div class="col-12 col-md-4">
+							<div class="col-12 col-md-3">
 								<label class="form-label small text-muted" for="cmbMonat">Monat</label>
 								<select id="cmbMonat" name='cmbMonat' class="form-select form-select-sm">
 									<option value='*'>alle Monate</option>
@@ -251,7 +275,7 @@
 									<option value='12' <?php if ($strMonat==12) echo 'selected'; ?> >Dezember</option>
 								</select>
 							</div>
-							<div class="col-12 col-md-4">
+							<div class="col-12 col-md-3">
 								<button class="btn btn-primary btn-sm w-100" type='submit' name='absenden' value='anzeigen'>anzeigen</button>
 							</div>
 						</form>

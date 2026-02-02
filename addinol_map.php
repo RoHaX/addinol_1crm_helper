@@ -14,7 +14,7 @@
 <main class="container-fluid py-3">
 <?php
 	$post = $_POST ?? [];
-	$hasPost = isset($post['absenden']);
+	$hasPost = isset($post['absenden']) || isset($post['hasFilter']);
 	$defaultState = 'Tirol';
 	$checked = function ($key) use ($post) {
 		return isset($post[$key]) && $post[$key] === 'on';
@@ -31,6 +31,7 @@
   <div class="card shadow-sm mb-3">
 		<div class="card-body">
 		<form action='addinol_map.php' method='post' class="d-flex flex-wrap gap-2 align-items-center" id="map-filter-form">
+			<input type="hidden" name="hasFilter" value="1">
 			<span class="fw-semibold">Bundesland:</span>
 			
 				
@@ -39,7 +40,7 @@
 		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkAlle' ".($allStates ? "checked" : "")."><span class='form-check-label fw-semibold'>Alle</span></label>";
 		
 		$states = [];
-		$tirolChecked = $checked('chkTirol') || (!$hasPost);
+		$tirolChecked = !$hasPost ? true : $checked('chkTirol');
 		if ($tirolChecked) { $states[] = $defaultState; }
 		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkTirol' ".($tirolChecked ? "checked" : "")."><span class='form-check-label'>Tirol</span></label>";
 		
@@ -67,7 +68,7 @@
 		if ($checked('chkWien')) { $states[] = "Wien"; }
 		print "<label class='form-check form-check-inline m-0'><input class='form-check-input filter-refresh' type='checkbox' name='chkWien' ".($checked('chkWien') ? "checked" : "")."><span class='form-check-label'>Wien</span></label>";
 		
-		if ($allStates || (!$hasPost && empty($states)) || $checked('chkAlle')) {
+		if ($allStates) {
 			$strFilter = "";
 		} else {
 			$stateParts = [];
@@ -82,7 +83,7 @@
 				}
 				$stateParts[] = "shipping_address_state = '".$state."'";
 			}
-			$strFilter = $stateParts ? "AND (" . implode(" OR ", $stateParts) . ") " : "";
+			$strFilter = $stateParts ? "AND (" . implode(" OR ", $stateParts) . ") " : "AND (1=0) ";
 		}
 		
 		print "<span class='fw-semibold ms-3'>Status:</span> ";
