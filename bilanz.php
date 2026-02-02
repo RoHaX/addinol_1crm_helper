@@ -176,21 +176,7 @@
 
 	</head>
 <body class="bg-light">
-	<nav class="navbar navbar-expand-lg navbar-dark bg-success shadow-sm">
-		<div class="container-fluid">
-			<a class="navbar-brand" href="index.php">1CRM Helfer</a>
-			<div class="d-flex flex-wrap gap-2">
-				<a class="btn btn-sm btn-light" href="bilanz.php"><i class="fas fa-chart-line"></i> Bilanz</a>
-				<a class="btn btn-sm btn-light" href="lagerstand.php"><i class="fas fa-warehouse"></i> Lagerstand</a>
-				<a class="btn btn-sm btn-light" href="artikelliste.php"><i class="fas fa-oil-can"></i> Artikelliste</a>
-				<a class="btn btn-sm btn-light" href="umsatzliste.php"><i class="fas fa-money-check-alt"></i> Umsatzliste</a>
-				<a class="btn btn-sm btn-light" href="addinol_map.php"><i class="fas fa-map-marked"></i> Addinol-Map</a>
-				<a class="btn btn-sm btn-light" href="update_invoice.php"><i class="far fa-edit"></i> Zahlungen korrigieren</a>
-				<a class="btn btn-sm btn-light" href="offene_rechnungen.php"><i class="fas fa-money-bill"></i> Offene Rechnungen</a>
-				<a class="btn btn-sm btn-light" href="offene_betraege_kunde.php"><i class="fas fa-money-bill"></i> Offene Beträge Kunde</a>
-			</div>
-		</div>
-	</nav>
+	<?php require_once __DIR__ . '/navbar.php'; ?>
 
 	<main class="container-fluid py-3">
 		<div class="row g-3">
