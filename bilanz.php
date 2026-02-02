@@ -97,11 +97,14 @@
 	/* 	END PIECHART */
 
 ?>
-<html>
+<!doctype html>
+<html lang="de">
 <head>
-<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bilanz</title>
 <link href="styles.css" rel="stylesheet" type="text/css" />
-
+<link href="assets/bootstrap/bootstrap.min.css" rel="stylesheet" />
 <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous">
 
 <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
@@ -171,19 +174,41 @@
   }
 </script>
 
-</head>
-<body>  
-	<a href="bilanz.php"><button><i class="fas fa-chart-line"></i> Bilanz</button></a>
-	<a href="lagerstand.php"><button><i class="fas fa-warehouse"></i> Lagerstand</button></a>
-	<a href="artikelliste.php"><button><i class="fas fa-oil-can"></i> Artikelliste</button></a>
-	<a href="umsatzliste.php"><button><i class="fas fa-money-check-alt"></i> Umsatzliste</button></a>
-	<a href="addinol_map.php"><button><i class="fas fa-map-marked"></i> Addinol-Map</button></a>
-	<a href="update_invoice.php"><button><i class="far fa-edit"></i> Zahlungen korrigieren</button></a>
-	<a href="offene_rechnungen.php"><button><i class="fas fa-money-bill"></i> offene Rechnungen</button></a>
-	<a href="offene_betraege_kunde.php"><button><i class="fas fa-money-bill"></i> offene Beträge Kunde</button></a>
-	
-	<div id="piechart" style="float: right; margin: 0px; padding: 0px; width: 400px; height: 350px;"></div>	
-	<div id="chart_div" style="margin-left: 10px; width: 1200px; height: 350px;"></div>
+	</head>
+<body class="bg-light">
+	<nav class="navbar navbar-expand-lg navbar-dark bg-success shadow-sm">
+		<div class="container-fluid">
+			<a class="navbar-brand" href="index.php">1CRM Helfer</a>
+			<div class="d-flex flex-wrap gap-2">
+				<a class="btn btn-sm btn-light" href="bilanz.php"><i class="fas fa-chart-line"></i> Bilanz</a>
+				<a class="btn btn-sm btn-light" href="lagerstand.php"><i class="fas fa-warehouse"></i> Lagerstand</a>
+				<a class="btn btn-sm btn-light" href="artikelliste.php"><i class="fas fa-oil-can"></i> Artikelliste</a>
+				<a class="btn btn-sm btn-light" href="umsatzliste.php"><i class="fas fa-money-check-alt"></i> Umsatzliste</a>
+				<a class="btn btn-sm btn-light" href="addinol_map.php"><i class="fas fa-map-marked"></i> Addinol-Map</a>
+				<a class="btn btn-sm btn-light" href="update_invoice.php"><i class="far fa-edit"></i> Zahlungen korrigieren</a>
+				<a class="btn btn-sm btn-light" href="offene_rechnungen.php"><i class="fas fa-money-bill"></i> Offene Rechnungen</a>
+				<a class="btn btn-sm btn-light" href="offene_betraege_kunde.php"><i class="fas fa-money-bill"></i> Offene Beträge Kunde</a>
+			</div>
+		</div>
+	</nav>
+
+	<main class="container-fluid py-3">
+		<div class="row g-3">
+			<div class="col-12 col-xl-8">
+				<div class="card shadow-sm">
+					<div class="card-body">
+						<div id="chart_div" style="min-height: 350px;"></div>
+					</div>
+				</div>
+			</div>
+			<div class="col-12 col-xl-4">
+				<div class="card shadow-sm">
+					<div class="card-body">
+						<div id="piechart" style="min-height: 350px;"></div>
+					</div>
+				</div>
+			</div>
+		</div>
 <?php
 		// if (!isset($strJahr)) {
 		// 	$strJahr = "2024";
@@ -196,45 +221,66 @@
 	if ($result = mysqli_query($link, $strSQLJahresUmsatz)) {
 		while ($row = mysqli_fetch_assoc($result)) {
 			if ($row['Umsatz'] >= 1000000) {
-				echo "<h2>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . "</h2>";
-				echo "<h1>Million geknackt!</h1>";
+				echo "<div class='alert alert-success fw-semibold my-3'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . " — Million geknackt!</div>";
 			} else {
-				echo "<h3>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . "</h3>";
+				echo "<div class='alert alert-info my-3'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . "</div>";
 			}
 		}		
 	}	
 
 
 ?>	
-	<div style="clear: left; width: 300px;">
-		<h1>Bilanz</h1> 
-		<form action='bilanz.php' method='post'>
-			<select name='cmbJahr'>
+		<div class="row g-3 mt-2">
+			<div class="col-12 col-lg-4">
+				<div class="card shadow-sm">
+					<div class="card-body">
+						<h1 class="h4 mb-3">Bilanz</h1>
+						<form action='bilanz.php' method='post' class="row g-2 align-items-end">
+							<div class="col-12">
+								<label class="form-label small text-muted" for="cmbJahr">Jahr</label>
+								<select id="cmbJahr" name='cmbJahr' class="form-select form-select-sm">
 				<?php
 				for ($i = 2016; $i <= 2026; $i++) {
 					$selected = $strJahr == $i ? 'selected' : '';
 					echo "<option value='$i' $selected>$i</option>";
 				}
 				?>				
-			</select>
-			<select name='cmbMonat'>
-				<option value='*'>alle Monate</option>
-				<option value='1' <?php if ($strMonat==1) echo 'selected'; ?> >Jänner</option>
-				<option value='2' <?php if ($strMonat==2) echo 'selected'; ?> >Februar</option>
-				<option value='3' <?php if ($strMonat==3) echo 'selected'; ?> >März</option>
-				<option value='4' <?php if ($strMonat==4) echo 'selected'; ?> >April</option>
-				<option value='5' <?php if ($strMonat==5) echo 'selected'; ?> >Mai</option>
-				<option value='6' <?php if ($strMonat==6) echo 'selected'; ?> >Juni</option>
-				<option value='7' <?php if ($strMonat==7) echo 'selected'; ?> >Juli</option>
-				<option value='8' <?php if ($strMonat==8) echo 'selected'; ?> >August</option>
-				<option value='9' <?php if ($strMonat==9) echo 'selected'; ?> >September</option>
-				<option value='10' <?php if ($strMonat==10) echo 'selected'; ?> >Oktober</option>
-				<option value='11' <?php if ($strMonat==11) echo 'selected'; ?> >November</option>
-				<option value='12' <?php if ($strMonat==12) echo 'selected'; ?> >Dezember</option>
-			</select>
-			<button type='submit' name='absenden' value='anzeigen'>anzeigen</button>
-		</form>
-	</div>
+								</select>
+							</div>
+							<div class="col-12">
+								<label class="form-label small text-muted" for="cmbMonat">Monat</label>
+								<select id="cmbMonat" name='cmbMonat' class="form-select form-select-sm">
+									<option value='*'>alle Monate</option>
+									<option value='1' <?php if ($strMonat==1) echo 'selected'; ?> >Jänner</option>
+									<option value='2' <?php if ($strMonat==2) echo 'selected'; ?> >Februar</option>
+									<option value='3' <?php if ($strMonat==3) echo 'selected'; ?> >März</option>
+									<option value='4' <?php if ($strMonat==4) echo 'selected'; ?> >April</option>
+									<option value='5' <?php if ($strMonat==5) echo 'selected'; ?> >Mai</option>
+									<option value='6' <?php if ($strMonat==6) echo 'selected'; ?> >Juni</option>
+									<option value='7' <?php if ($strMonat==7) echo 'selected'; ?> >Juli</option>
+									<option value='8' <?php if ($strMonat==8) echo 'selected'; ?> >August</option>
+									<option value='9' <?php if ($strMonat==9) echo 'selected'; ?> >September</option>
+									<option value='10' <?php if ($strMonat==10) echo 'selected'; ?> >Oktober</option>
+									<option value='11' <?php if ($strMonat==11) echo 'selected'; ?> >November</option>
+									<option value='12' <?php if ($strMonat==12) echo 'selected'; ?> >Dezember</option>
+								</select>
+							</div>
+							<div class="col-12">
+								<button class="btn btn-primary btn-sm w-100" type='submit' name='absenden' value='anzeigen'>anzeigen</button>
+							</div>
+						</form>
+					</div>
+				</div>
+			</div>
+</div>
+
+		<div class="row g-3 mt-3">
+			<div class="col-12">
+				<div class="card shadow-sm">
+					<div class="card-header d-flex align-items-center justify-content-between">
+						<h2 class="h5 mb-0">Ausgangsrechnungen</h2>
+					</div>
+					<div class="card-body">
 
 <?php
 
@@ -243,13 +289,15 @@
 	$SumSkonto = 0;
 	
 	/* Ausgangsrechnungen */
-	print "\t<table>\n";
+	print "<div class='table-responsive'>\n";
+	print "\t<table class='table table-sm table-striped table-hover align-middle'>\n";
 	
 	$strSQL = "SELECT invoice.id, invoice.prefix, invoice.invoice_number, invoice.invoice_date, invoice.name, invoice.amount, invoice.pretax, invoice.deleted, accounts.ticker_symbol
 	FROM accounts INNER JOIN invoice ON accounts.id = invoice.billing_account_id
 	WHERE (((invoice.deleted)=0) AND (YEAR(invoice.invoice_date)=".$strJahr.")".$strQuery.") ORDER BY invoice.prefix, invoice.invoice_number;";
 
-	print "\t<tr><th>Rechnung</th><th>Datum</th><th>Fibu</th><th width=270>Bezeichnung</th><th width=90 width=90>Brutto</th><th width=85>Zahlung</th><th width=90>Betrag</th><th width=60>Skonto</th><th width=90>Saldo</th><th width=90>Netto</th><th width=90>MwSt</th><th width=90>Abzug</th></tr>\n";
+	print "\t<thead class='table-light'><tr><th>Rechnung</th><th>Datum</th><th>Fibu</th><th>Bezeichnung</th><th>Brutto</th><th>Zahlung</th><th>Betrag</th><th>Skonto</th><th>Saldo</th><th>Netto</th><th>MwSt</th><th>Abzug</th></tr></thead>\n";
+	print "\t<tbody>\n";
 	if ($result = mysqli_query($link, $strSQL)) 
 	{
 		while ($row = mysqli_fetch_assoc($result)) {	
@@ -402,27 +450,39 @@
 		$negcls = "";
 	}
 	
-	print "\t<tr><th></th><th></th><th></th><th>Summe</th><th>".number_format($SumReBetrag, 2, ',', '.')."</th><th></th><th>".number_format($SumZahlung, 2, ',', '.')."</th><th>".number_format($SumSkonto, 2, ',', '.')."</th><th".$negcls.">".number_format($SumSaldo, 2, ',', '.')."</th><th>".number_format($SumNetto, 2, ',', '.')."</th></tr>\n";
+	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td>Summe</td><td>".number_format($SumReBetrag, 2, ',', '.')."</td><td></td><td>".number_format($SumZahlung, 2, ',', '.')."</td><td>".number_format($SumSkonto, 2, ',', '.')."</td><td".$negcls.">".number_format($SumSaldo, 2, ',', '.')."</td><td>".number_format($SumNetto, 2, ',', '.')."</td><td></td><td></td></tr>\n";
 
+	print "\t</tbody>\n";
 	print "\t</table>\n";
+	print "</div>\n";
 
 	if ($strMonat != "*") {
-		print "<b><a href='export_kunden.php'>EXPORT Kunden</a> | \n";
-		print "<b><a href='export_lieferanten.php'>EXPORT Lieferanten</a> | \n";
-		print "<a href='export_ar.php?jahr=".$strJahr."&monat=".$strMonat."''>EXPORT AR</a> | \n";
-		print "<a href='export_ar_zahlung.php?jahr=".$strJahr."&monat=".$strMonat."''>EXPORT AR Zahlungen</a> | \n";
-		print "<a href='export_er.php?jahr=".$strJahr."&monat=".$strMonat."''>EXPORT ER</a> | \n";
-		print "<br><button onclick=\"window.location.href='pdfexport/export_pdf.php?jahr=".$strJahr."&monat=".$strMonat."';\"><i class='fas fa-download fa-2x'></i> Download PDF ZIP-Archiv</button>\n";
+		print "<div class='d-flex flex-wrap gap-2 my-3'>\n";
+		print "<a class='btn btn-outline-success btn-sm' href='export_kunden.php'>EXPORT Kunden</a>\n";
+		print "<a class='btn btn-outline-success btn-sm' href='export_lieferanten.php'>EXPORT Lieferanten</a>\n";
+		print "<a class='btn btn-outline-success btn-sm' href='export_ar.php?jahr=".$strJahr."&monat=".$strMonat."'>EXPORT AR</a>\n";
+		print "<a class='btn btn-outline-success btn-sm' href='export_ar_zahlung.php?jahr=".$strJahr."&monat=".$strMonat."'>EXPORT AR Zahlungen</a>\n";
+		print "<a class='btn btn-outline-success btn-sm' href='export_er.php?jahr=".$strJahr."&monat=".$strMonat."'>EXPORT ER</a>\n";
+		print "<button class='btn btn-success btn-sm' type='button' onclick=\"window.location.href='pdfexport/export_pdf.php?jahr=".$strJahr."&monat=".$strMonat."';\"><i class='fas fa-download'></i> Download PDF ZIP-Archiv</button>\n";
+		print "</div>\n";
 		//print "<br><button style='border: 1px solid #006600; font-size: 12px; padding: 8px; font-weight: bold; border-radius: 5px; background-color: #00cc00; color: #fff;' onclick=\"window.location.href='pdfexport/export_pdf.php?jahr=".$strJahr."&monat=".$strMonat."';\"><i class='fas fa-download fa-2x'></i> Download PDF ZIP-Archiv</button>\n";
 	}	
 	
-	print "\t<br>\n";
-	print "\t<br>\n";
+	print "</div>\n";
+	print "</div>\n";
+	print "</div>\n";
+	print "</div>\n";
 	
 	
 	
 	/* Eingangsrechnungen */
-	print "\t<table>\n";
+	print "<div class='row g-3 mt-3'>\n";
+	print "<div class='col-12'>\n";
+	print "<div class='card shadow-sm'>\n";
+	print "<div class='card-header d-flex align-items-center justify-content-between'><h2 class='h5 mb-0'>Eingangsrechnungen</h2></div>\n";
+	print "<div class='card-body'>\n";
+	print "<div class='table-responsive'>\n";
+	print "\t<table class='table table-sm table-striped table-hover align-middle'>\n";
 	$SumERBetrag = 0;
 	$SumZahlung = 0;
 	$SumSaldo = 0;
@@ -438,7 +498,8 @@
 	FROM bills INNER JOIN accounts ON bills.supplier_id = accounts.id
 	WHERE (((bills.deleted)=0) AND (YEAR(bills.bill_date)=".$strJahr.")".$strQuery.") ORDER BY bills.prefix, bills.bill_number;";
 
-	print "\t<tr><th>ER-Nr.</th><th>Datum</th><th>Fibu</th><th width=50>BelegNr</th><th width=280>Bezeichnung</th><th width=90>Betrag</th><th>Steuer</th><th>StPrz.</th><th width=120>Zahlung am</th><th width=90>Betrag</th><th width=90></th><th width=90>Saldo</th></tr>\n";
+	print "\t<thead class='table-light'><tr><th>ER-Nr.</th><th>Datum</th><th>Fibu</th><th>BelegNr</th><th>Bezeichnung</th><th>Betrag</th><th>Steuer</th><th>StPrz.</th><th>Zahlung am</th><th>Betrag</th><th></th><th>Saldo</th></tr></thead>\n";
+	print "\t<tbody>\n";
 	
 	if ($result = mysqli_query($link, $strSQL)) {
 		while ($row = mysqli_fetch_assoc($result)) {
@@ -478,12 +539,19 @@
 	
 	
 		
-	print "\t<tr><th></th><th></th><th></th><th></th><th>Summe</th><th>".number_format($SumERBetrag, 2, ',', '.')."</th><th>".number_format($SumMwSt, 2, ',', '.')."</th>";
-	print "<th></th><th>--</th><th".$negcls.">".number_format(($SumERBetrag-$SumMwSt), 2, ',', '.')."</th></tr>\n";
+	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td></td><td>Summe</td><td>".number_format($SumERBetrag, 2, ',', '.')."</td><td>".number_format($SumMwSt, 2, ',', '.')."</td>";
+	print "<td></td><td>--</td><td".$negcls.">".number_format(($SumERBetrag-$SumMwSt), 2, ',', '.')."</td><td></td><td></td></tr>\n";
+	print "\t</tbody>\n";
 	print "\t</table>\n";
+	print "</div>\n";
+	print "</div>\n";
+	print "</div>\n";
+	print "</div>\n";
+	print "</div>\n";
 	
 
 ?>
-
+	</main>
+	<script src="assets/bootstrap/bootstrap.bundle.min.js"></script>
 </body>
 </html>
