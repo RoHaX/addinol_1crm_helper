@@ -57,7 +57,7 @@ th.nobg {
 }
 
 td {
-	font-size: 12px;
+	font-size: 15px;
 	border-right: 1px solid #C1DAD7;
 	border-bottom: 1px solid #C1DAD7;
 	background: #fff;
@@ -67,6 +67,12 @@ td {
 
 td.neg {
 	color: red;
+}
+
+/* DataTables readability */
+.dataTables_wrapper .dataTable th,
+.dataTables_wrapper .dataTable td {
+	font-size: 15px;
 }
 
 select {
