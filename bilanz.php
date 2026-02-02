@@ -204,12 +204,13 @@
 		GROUP BY Jahr, invoice.deleted
 		HAVING invoice.deleted=0 AND Jahr = " . $strJahr;
 
+	$jahrAlertHtml = "";
 	if ($result = mysqli_query($link, $strSQLJahresUmsatz)) {
 		while ($row = mysqli_fetch_assoc($result)) {
 			if ($row['Umsatz'] >= 1000000) {
-				echo "<div class='alert alert-success fw-semibold my-3'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . " — Million geknackt!</div>";
+				$jahrAlertHtml = "<div class='alert alert-success fw-semibold mb-0'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . " — Million geknackt!</div>";
 			} else {
-				echo "<div class='alert alert-info my-3'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . "</div>";
+				$jahrAlertHtml = "<div class='alert alert-info mb-0'>Jahresumsatz: € " . number_format($row['Umsatz'], 2, ',', '.') . "</div>";
 			}
 		}		
 	}	
@@ -217,12 +218,11 @@
 
 ?>	
 		<div class="row g-3 mt-2">
-			<div class="col-12 col-lg-4">
+			<div class="col-12 col-lg-8">
 				<div class="card shadow-sm">
 					<div class="card-body">
-						<h1 class="h4 mb-3">Bilanz</h1>
 						<form action='bilanz.php' method='post' class="row g-2 align-items-end">
-							<div class="col-12">
+							<div class="col-12 col-md-4">
 								<label class="form-label small text-muted" for="cmbJahr">Jahr</label>
 								<select id="cmbJahr" name='cmbJahr' class="form-select form-select-sm">
 				<?php
@@ -233,7 +233,7 @@
 				?>				
 								</select>
 							</div>
-							<div class="col-12">
+							<div class="col-12 col-md-4">
 								<label class="form-label small text-muted" for="cmbMonat">Monat</label>
 								<select id="cmbMonat" name='cmbMonat' class="form-select form-select-sm">
 									<option value='*'>alle Monate</option>
@@ -251,14 +251,21 @@
 									<option value='12' <?php if ($strMonat==12) echo 'selected'; ?> >Dezember</option>
 								</select>
 							</div>
-							<div class="col-12">
+							<div class="col-12 col-md-4">
 								<button class="btn btn-primary btn-sm w-100" type='submit' name='absenden' value='anzeigen'>anzeigen</button>
 							</div>
 						</form>
 					</div>
 				</div>
 			</div>
-</div>
+			<div class="col-12 col-lg-4">
+				<div class="card shadow-sm h-100">
+					<div class="card-body">
+						<?php echo $jahrAlertHtml; ?>
+					</div>
+				</div>
+			</div>
+		</div>
 
 		<div class="row g-3 mt-3">
 			<div class="col-12">
@@ -282,7 +289,7 @@
 	FROM accounts INNER JOIN invoice ON accounts.id = invoice.billing_account_id
 	WHERE (((invoice.deleted)=0) AND (YEAR(invoice.invoice_date)=".$strJahr.")".$strQuery.") ORDER BY invoice.prefix, invoice.invoice_number;";
 
-	print "\t<thead class='table-light'><tr><th>Rechnung</th><th>Datum</th><th>Fibu</th><th>Bezeichnung</th><th>Brutto</th><th>Zahlung</th><th>Betrag</th><th>Skonto</th><th>Saldo</th><th>Netto</th><th>MwSt</th><th>Abzug</th></tr></thead>\n";
+	print "\t<thead class='table-light'><tr><th>Rechnung</th><th>Datum</th><th>Fibu</th><th>Bezeichnung</th><th class='text-end'>Brutto</th><th>Zahlung</th><th class='text-end'>Betrag</th><th class='text-end'>Skonto</th><th class='text-end'>Saldo</th><th class='text-end'>Netto</th><th class='text-end'>MwSt</th><th class='text-end'>Abzug</th></tr></thead>\n";
 	print "\t<tbody>\n";
 	if ($result = mysqli_query($link, $strSQL)) 
 	{
@@ -430,13 +437,9 @@
 	
 	
 	
-	if ($SumSaldo < 0.00) { 
-		$negcls = " class='neg'";
-	} else {
-		$negcls = "";
-	}
+	$negClassSum = $SumSaldo < 0.00 ? " neg" : "";
 	
-	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td>Summe</td><td>".number_format($SumReBetrag, 2, ',', '.')."</td><td></td><td>".number_format($SumZahlung, 2, ',', '.')."</td><td>".number_format($SumSkonto, 2, ',', '.')."</td><td".$negcls.">".number_format($SumSaldo, 2, ',', '.')."</td><td>".number_format($SumNetto, 2, ',', '.')."</td><td></td><td></td></tr>\n";
+	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td>Summe</td><td class='text-end'>".number_format($SumReBetrag, 2, ',', '.')."</td><td></td><td class='text-end'>".number_format($SumZahlung, 2, ',', '.')."</td><td class='text-end'>".number_format($SumSkonto, 2, ',', '.')."</td><td class='text-end".$negClassSum."'>".number_format($SumSaldo, 2, ',', '.')."</td><td class='text-end'>".number_format($SumNetto, 2, ',', '.')."</td><td></td><td></td></tr>\n";
 
 	print "\t</tbody>\n";
 	print "\t</table>\n";
@@ -484,7 +487,7 @@
 	FROM bills INNER JOIN accounts ON bills.supplier_id = accounts.id
 	WHERE (((bills.deleted)=0) AND (YEAR(bills.bill_date)=".$strJahr.")".$strQuery.") ORDER BY bills.prefix, bills.bill_number;";
 
-	print "\t<thead class='table-light'><tr><th>ER-Nr.</th><th>Datum</th><th>Fibu</th><th>BelegNr</th><th>Bezeichnung</th><th>Betrag</th><th>Steuer</th><th>StPrz.</th><th>Zahlung am</th><th>Betrag</th><th></th><th>Saldo</th></tr></thead>\n";
+	print "\t<thead class='table-light'><tr><th>ER-Nr.</th><th>Datum</th><th>Fibu</th><th>BelegNr</th><th>Bezeichnung</th><th class='text-end'>Betrag</th><th class='text-end'>Steuer</th><th>StPrz.</th><th>Zahlung am</th><th class='text-end'>Betrag</th><th></th><th class='text-end'>Saldo</th></tr></thead>\n";
 	print "\t<tbody>\n";
 	
 	if ($result = mysqli_query($link, $strSQL)) {
@@ -525,8 +528,10 @@
 	
 	
 		
-	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td></td><td>Summe</td><td>".number_format($SumERBetrag, 2, ',', '.')."</td><td>".number_format($SumMwSt, 2, ',', '.')."</td>";
-	print "<td></td><td>--</td><td".$negcls.">".number_format(($SumERBetrag-$SumMwSt), 2, ',', '.')."</td><td></td><td></td></tr>\n";
+	$saldoEr = $SumERBetrag - $SumMwSt;
+	$negClassEr = $saldoEr < 0.00 ? " neg" : "";
+	print "\t<tr class='table-secondary fw-semibold'><td></td><td></td><td></td><td></td><td>Summe</td><td class='text-end'>".number_format($SumERBetrag, 2, ',', '.')."</td><td class='text-end'>".number_format($SumMwSt, 2, ',', '.')."</td>";
+	print "<td></td><td>--</td><td class='text-end".$negClassEr."'>".number_format($saldoEr, 2, ',', '.')."</td><td></td><td></td></tr>\n";
 	print "\t</tbody>\n";
 	print "\t</table>\n";
 	print "</div>\n";
