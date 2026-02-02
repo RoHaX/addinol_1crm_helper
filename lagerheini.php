@@ -269,7 +269,7 @@ if ($icount > 0) {
                     $addText
                     <p>" . sprintf($character['outro'], number_format($ausfuehrungszeit, 6)) . "</p>
                     <p>".$character['closing']."</p>
-                    <div class='meta'>Hinweis: Diese Nachricht wurde automatisch erstellt.</div>
+                    <div class='meta'>Hinweis: Diese Nachricht wurde automatisch erstellt. Fiktiver Angestellter (Bot) – steuerbefreit nach §12 Abs. 2 BotG (Satire).</div>
                 </div>
                 <div class='footer'>Addinol CRM - Lagerheini</div>
             </div>
