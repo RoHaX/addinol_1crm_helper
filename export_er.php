@@ -65,9 +65,9 @@
 			$GKonto = "5200";
 			$SteuerCode = "9";
 			
-			//300009 Hutchinson und 300010 A1 Gegenkonto auf  7297
+			//300009 Hutchinson und 300010 A1 Gegenkonto auf  7380 lt. Hermann (bzw. Buchhalter) am 10.02.2025
 			if ($KontoNr == "300009" OR $KontoNr == "300009") {
-				$GKonto = "7292";
+				$GKonto = "7380";
 				$SteuerCode = "2";
 			};
 			//beim Transporte Haselsberger Johann Lieferant Nr. 300015 als gegenkonto bie Rechnungen die Nr. 7270 hinterlegen - ist für Tankrechnungen.
