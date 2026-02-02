@@ -9,12 +9,7 @@
 <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous">
 </head>
 <body class="bg-light">
-	<nav class="navbar navbar-expand-lg navbar-dark bg-success shadow-sm">
-		<div class="container">
-			<a class="navbar-brand" href="index.php">1CRM Helfer</a>
-			<span class="navbar-text text-white-50">Umsatzliste</span>
-		</div>
-	</nav>
+	<?php require_once __DIR__ . '/navbar.php'; ?>
 
 	<main class="container py-4">
 		<div class="row g-3">
