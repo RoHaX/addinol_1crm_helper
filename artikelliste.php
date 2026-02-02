@@ -21,7 +21,7 @@
 <?php
 	
 	/* Ausgangsrechnungen */
-	print "<div class='card shadow-sm'>\n";
+	print "<div class='card shadow-sm mx-auto' style='max-width: 1200px;'>\n";
 	print "<div class='card-body'>\n";
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='artikelliste-table' class='table table-sm table-striped table-hover align-middle'>\n";
