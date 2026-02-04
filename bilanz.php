@@ -76,6 +76,8 @@
 			$arrUmsatz[$strKey]['Rechnung'] = $row['Rechnung'];
 		}
 	}
+	$arrUmsatzSorted = $arrUmsatz;
+	ksort($arrUmsatzSorted);
 	/* END CHART */
 	$arrPie = array();
 	/* Begin PIECHART 	*/
@@ -98,6 +100,36 @@
 	}
 	/* 	END PIECHART */
 
+	$chartLabels = array();
+	$chartZahlung = array();
+	$chartRechnung = array();
+	$chartUmsatz = array();
+	$chartGewinn = array();
+
+	foreach ($arrUmsatzSorted as $nr => $inhalt) {
+		if (isset($inhalt['Jahr'])) {
+			$yearShort = substr($inhalt['Jahr'], -2);
+			$monthPadded = str_pad($inhalt['Monat'], 2, "0", STR_PAD_LEFT);
+			$label = $yearShort . "/" . $monthPadded;
+			$zahlung = round($inhalt['Zahlung'] ?? 0, 2);
+			$rechnung = round($inhalt['Rechnung'] ?? 0, 2);
+			$umsatz = round($inhalt['Umsatz'] ?? 0, 2);
+			$gewinn = $umsatz - $rechnung;
+			$chartLabels[] = $label;
+			$chartZahlung[] = $zahlung;
+			$chartRechnung[] = $rechnung;
+			$chartUmsatz[] = $umsatz;
+			$chartGewinn[] = $gewinn;
+		}
+	}
+
+	$pieLabels = array();
+	$pieValues = array();
+	foreach ($arrPie as $inhalt) {
+		$pieLabels[] = $inhalt['Name'];
+		$pieValues[] = round($inhalt['Umsatz'], 2);
+	}
+
 ?>
 <!doctype html>
 <html lang="de">
@@ -109,81 +141,120 @@
 <link href="assets/bootstrap/bootstrap.min.css" rel="stylesheet" />
 <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.5.0/css/all.css" integrity="sha384-B4dIYHKNBt8Bc12p+WXckhzcICo0wtJAoU8YZTY5qE0Id1GSseTk6S+L3BlXeVIU" crossorigin="anonymous">
 
-<script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script type="text/javascript">
+  document.addEventListener('DOMContentLoaded', () => {
+	let chartLabels = <?php echo json_encode($chartLabels); ?>;
+	let chartZahlung = <?php echo json_encode($chartZahlung); ?>;
+	let chartRechnung = <?php echo json_encode($chartRechnung); ?>;
+	let chartUmsatz = <?php echo json_encode($chartUmsatz); ?>;
+	let chartGewinn = <?php echo json_encode($chartGewinn); ?>;
+	let pieLabels = <?php echo json_encode($pieLabels); ?>;
+	let pieValues = <?php echo json_encode($pieValues); ?>;
 
-  google.charts.load('current', {'packages':['corechart']});
-  google.charts.setOnLoadCallback(drawChart);
-  function drawChart() {
-	var rawData = [
-<?php
-	print "['Monat', 'Zahlungseingang', 'Eingangsrechnungen', 'Umsatz', 'Gewinn']";
-	$inhalt = array();
-	foreach ($arrUmsatz as $nr => $inhalt)
-	{
-		if (isset($inhalt['Jahr'])) {
+	const useRange = "<?php echo $strRange; ?>" === "36";
+	if (useRange && chartLabels.length > 36) {
+		const start = chartLabels.length - 36;
+		chartLabels = chartLabels.slice(start);
+		chartZahlung = chartZahlung.slice(start);
+		chartRechnung = chartRechnung.slice(start);
+		chartUmsatz = chartUmsatz.slice(start);
+		chartGewinn = chartGewinn.slice(start);
+	}
 
-			print ",";
-			$yearShort = substr($inhalt['Jahr'], -2);
-			$monthPadded = str_pad($inhalt['Monat'], 2, "0", STR_PAD_LEFT);
-			$Key  = $yearShort . "/" . $monthPadded;
-			$Zahlung = round($inhalt['Zahlung'] ?? 0, 2);
-			$Rechnung = round($inhalt['Rechnung'] ?? 0, 2);
-			$Umsatz = round($inhalt['Umsatz'] ?? 0, 2);
-			$Gewinn = $Umsatz - $Rechnung;
-			echo "['$Key', $Zahlung, $Rechnung, $Umsatz, $Gewinn]";
+	const overviewCtx = document.getElementById('chart_div').getContext('2d');
+	new Chart(overviewCtx, {
+		type: 'line',
+		data: {
+			labels: chartLabels,
+			datasets: [
+				{
+					label: 'Zahlungseingang',
+					data: chartZahlung,
+					borderColor: '#0d6efd',
+					backgroundColor: 'rgba(13,110,253,0.15)',
+					tension: 0.3,
+					fill: true,
+					hidden: true
+				},
+				{
+					label: 'Eingangsrechnungen',
+					data: chartRechnung,
+					borderColor: '#dc3545',
+					backgroundColor: 'rgba(220,53,69,0.12)',
+					tension: 0.3,
+					fill: true,
+					hidden: true
+				},
+				{
+					label: 'Umsatz',
+					data: chartUmsatz,
+					borderColor: '#198754',
+					backgroundColor: 'rgba(25,135,84,0.15)',
+					tension: 0.3,
+					fill: true
+				},
+				{
+					label: 'Gewinn',
+					data: chartGewinn,
+					borderColor: '#6f42c1',
+					backgroundColor: 'rgba(111,66,193,0.15)',
+					tension: 0.3,
+					fill: true
+				}
+			]
+		},
+		options: {
+			responsive: true,
+			maintainAspectRatio: false,
+			interaction: { mode: 'index', intersect: false },
+			plugins: {
+				title: {
+					display: true,
+					text: useRange ? 'Übersicht (letzte 36 Monate)' : 'Übersicht (alle Jahre)'
+				},
+				legend: { position: 'top' },
+				tooltip: { mode: 'index', intersect: false }
+			},
+			scales: {
+				x: {
+					title: { display: true, text: 'Monat' },
+					ticks: { autoSkip: true, maxTicksLimit: 12 }
+				},
+				y: {
+					beginAtZero: true
+				}
+			}
 		}
-		
-	}
-?>	
-	];
-	var useRange = "<?php echo $strRange; ?>" === "36";
-	if (useRange && rawData.length > 37) {
-		rawData = [rawData[0]].concat(rawData.slice(-36));
-	}
-	var data = google.visualization.arrayToDataTable(rawData);
+	});
 
-
-	var options = {
-	  title: useRange ? 'Übersicht (letzte 36 Monate)' : 'Übersicht (alle Jahre)',
-	  isStacked: false,
-	  legend: {position: 'top', maxLines: 3},
-	  chartArea: {left: 60, top: 40, width: '92%', height: '70%'},
-	  hAxis: {title: 'Monat',  textStyle: { fontSize: 8, color: '#444'}, titleTextStyle: { color: '#333'}},
-	  vAxis: {minValue: 0}
-	};
-
-	var chart = new google.visualization.AreaChart(document.getElementById('chart_div'));
-	chart.draw(data, options);
-	
-	var data = google.visualization.arrayToDataTable([
-<?php
-
-	if (isset($arrPie)) {
-
-		print "['Firma', 'Umsatz']";
-		foreach ($arrPie as $nr => $inhalt)
-		{
-			print ",";
-			$Key  = $inhalt['Name'];
-			$Umsatz  = $inhalt['Umsatz'];
-			echo "['$Key', $Umsatz]";
+	const pieCtx = document.getElementById('piechart').getContext('2d');
+	new Chart(pieCtx, {
+		type: 'doughnut',
+		data: {
+			labels: pieLabels,
+			datasets: [
+				{
+					data: pieValues,
+					backgroundColor: [
+						'#0d6efd', '#198754', '#ffc107', '#dc3545', '#6f42c1',
+						'#20c997', '#fd7e14', '#0dcaf0', '#6c757d', '#1982c4'
+					],
+					borderWidth: 0
+				}
+			]
+		},
+		options: {
+			responsive: true,
+			maintainAspectRatio: false,
+			plugins: {
+				title: { display: true, text: 'Monatsumsatz' },
+				legend: { display: false }
+			},
+			cutout: '60%'
 		}
-	}
-?>	
-	]);
-
-	var options = {
-	  title: 'Monatsumsatz',
-	  chartArea: {left: 10, top: 40, width: '75%', height: '80%'},
-	  legend: {position: 'right'}
-	};
-
-	var chart = new google.visualization.PieChart(document.getElementById('piechart'));
-
-	chart.draw(data, options);
-	
-  }
+	});
+  });
 </script>
 
 	</head>
@@ -207,14 +278,14 @@
 						</form>
 					</div>
 					<div class="card-body p-2">
-						<div id="chart_div" style="min-height: 300px;"></div>
+						<canvas id="chart_div" style="min-height: 320px;"></canvas>
 					</div>
 				</div>
 			</div>
 			<div class="col-12 col-xl-4">
 				<div class="card shadow-sm">
 					<div class="card-body">
-						<div id="piechart" style="min-height: 350px;"></div>
+						<canvas id="piechart" style="min-height: 175px;"></canvas>
 					</div>
 				</div>
 			</div>
