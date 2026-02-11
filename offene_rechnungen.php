@@ -1,7 +1,7 @@
 <?php
-	$link = mysqli_connect('localhost', 'addinol_usr', 'lwT1e99~', 'addinol_crm');
+	require_once __DIR__ . '/db.inc.php';
+	$link = $mysqli;
 	mysqli_set_charset($link, "utf8");
-	
 ?>
 <!doctype html>
 <html lang="de">
@@ -24,9 +24,10 @@
 		$invoice = $_GET['invoice_id'];
 		print "<div class='alert alert-warning'>RECHNUNG: ".$invoice."</div>";
 		
+		$invoice = mysqli_real_escape_string($link, $invoice);
 		$strUpdate = "UPDATE invoice 
-			SET amount_due = '0'
-			AND amount_due_usdollar = '0'
+			SET amount_due = '0',
+			amount_due_usdollar = '0'
 			WHERE id = '$invoice'";
 		echo "<div class='text-muted small mb-2'>".$strUpdate."</div>";
 		$result = mysqli_query($link, $strUpdate);
