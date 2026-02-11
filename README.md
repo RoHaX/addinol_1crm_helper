@@ -32,6 +32,41 @@ Kleine Sammlung interner Helfer-Skripte rund um 1CRM (Berichte, Exporte, Lager, 
 - `lagerheini.php` versendet E-Mails, Texte werden zufällig aus Charakteren gewählt.
 - Karten-Daten kommen aus `accounts` + `accounts_cstm` (Latitude/Longitude).
 
+## Agent Rules
+
+- Siehe `AGENTS.md`.
+
+## DB Schema
+
+- Doku: `docs/DB_SCHEMA.md`
+- Snapshot: `schema.sql`
+
+## Middleware
+
+Poller (CLI):
+
+```
+php bin/poll.php
+FORCE_RECHECK=1 php bin/poll.php
+```
+
+Poller updates status to `imported` when 1CRM email exists, else `pending_import`.
+Pending imports are created in 1CRM (optional link via `MW_DEFAULT_PARENT_TYPE` + `MW_DEFAULT_PARENT_ID` env).
+
+Action endpoint (POST JSON, header `X-ACTION-KEY`):
+
+```
+curl -s -X POST -H "Content-Type: application/json" -H "X-ACTION-KEY: YOUR_KEY" \
+  -d '{"tracked_mail_id":123,"action_type":"CREATE_TASK"}' \
+  https://your-host/crm/roman/middleware/action.php
+```
+
+Worker (CLI):
+
+```
+php bin/worker.php
+```
+
 ## Lokal testen
 
 Beispiel (CLI):
