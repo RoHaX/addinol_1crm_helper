@@ -27,7 +27,8 @@ if (!$mailboxes) {
 $selectByMailboxUid = $db->prepare('SELECT id, status FROM mw_tracked_mail WHERE mailbox = ? AND uid = ? LIMIT 1');
 $selectByHash = $db->prepare('SELECT id, status FROM mw_tracked_mail WHERE message_hash = ? LIMIT 1');
 $selectCrmByMessageId = $db->prepare('SELECT id FROM addinol_crm.emails WHERE deleted = 0 AND message_id = ? LIMIT 1');
-$insert = $db->prepare('INSERT INTO mw_tracked_mail (mailbox, uid, message_id, message_hash, date, from_addr, subject, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'"'"'new'"'"',NOW(),NOW())');
+$selectCrmByMessageIdNormalized = $db->prepare("SELECT id FROM addinol_crm.emails WHERE deleted = 0 AND LOWER(TRIM(BOTH '>' FROM TRIM(BOTH '<' FROM TRIM(message_id)))) = ? LIMIT 1");
+$insert = $db->prepare("INSERT INTO mw_tracked_mail (mailbox, uid, message_id, message_hash, date, from_addr, subject, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?,'new',NOW(),NOW())");
 $update = $db->prepare('UPDATE mw_tracked_mail SET message_id = ?, message_hash = ?, date = ?, from_addr = ?, subject = ?, status = "new", updated_at = NOW() WHERE id = ?');
 $updateImported = $db->prepare('UPDATE mw_tracked_mail SET status = "imported", crm_email_id = ?, last_error = NULL, updated_at = NOW() WHERE id = ?');
 $updatePending = $db->prepare('UPDATE mw_tracked_mail SET status = "pending_import", last_error = NULL, updated_at = NOW() WHERE id = ?');
@@ -88,7 +89,7 @@ foreach ($mailboxes as $mailbox) {
 					}
 
 					if ($existingStatus === 'new' || $existingStatus === 'pending_import') {
-						$crmId = find_crm_email_id($selectCrmByMessageId, $messageId);
+						$crmId = find_crm_email_id($selectCrmByMessageId, $selectCrmByMessageIdNormalized, $messageId);
 						if ($crmId) {
 							$updateImported->bind_param('si', $crmId, $existingId);
 							$updateImported->execute();
@@ -104,7 +105,7 @@ foreach ($mailboxes as $mailbox) {
 				$insert->execute();
 				$newId = $db->insert_id;
 				if ($newId) {
-					$crmId = find_crm_email_id($selectCrmByMessageId, $messageId);
+					$crmId = find_crm_email_id($selectCrmByMessageId, $selectCrmByMessageIdNormalized, $messageId);
 					if ($crmId) {
 						$updateImported->bind_param('si', $crmId, $newId);
 						$updateImported->execute();
@@ -142,17 +143,31 @@ function normalize_message_id($messageId)
 	return $messageId;
 }
 
-function find_crm_email_id($stmt, $messageId)
+function find_crm_email_id($stmtExact, $stmtNormalized, $messageId)
 {
 	if (!$messageId) {
 		return null;
 	}
-	$stmt->bind_param('s', $messageId);
-	if ($stmt->execute()) {
-		$res = $stmt->get_result();
+
+	$stmtExact->bind_param('s', $messageId);
+	if ($stmtExact->execute()) {
+		$res = $stmtExact->get_result();
 		if ($row = $res->fetch_assoc()) {
 			return $row['id'];
 		}
 	}
+
+	$normalized = strtolower(trim($messageId, "<> \t\n\r\0\x0B"));
+	if ($normalized === '') {
+		return null;
+	}
+	$stmtNormalized->bind_param('s', $normalized);
+	if ($stmtNormalized->execute()) {
+		$res = $stmtNormalized->get_result();
+		if ($row = $res->fetch_assoc()) {
+			return $row['id'];
+		}
+	}
+
 	return null;
 }

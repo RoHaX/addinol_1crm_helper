@@ -35,7 +35,7 @@
 	if ($result = mysqli_query($link, $strSQL)) 
 	{
 		while ($row = mysqli_fetch_assoc($result)) {
-			$strKey = $row['Jahr']."-".$row['Monat'];
+				$strKey = sprintf('%04d-%02d', (int)$row['Jahr'], (int)$row['Monat']);
 			$arrUmsatz[$strKey] = [
 				'Jahr' => $row['Jahr'],
 				'Monat' => $row['Monat'],
@@ -52,7 +52,7 @@
 	if ($result = mysqli_query($link, $strSQL)) 
 	{
 		while ($row = mysqli_fetch_assoc($result)) {
-			$strKey = $row['Jahr']."-".$row['Monat'];
+				$strKey = sprintf('%04d-%02d', (int)$row['Jahr'], (int)$row['Monat']);
 			$arrUmsatz[$strKey]['Umsatz'] = $row['Umsatz'];
 		}
 	}
@@ -72,7 +72,7 @@
 	{
 		while ($row = mysqli_fetch_assoc($result)) {
 
-			$strKey = $row['Jahr']."-".$row['Monat'];
+				$strKey = sprintf('%04d-%02d', (int)$row['Jahr'], (int)$row['Monat']);
 			$arrUmsatz[$strKey]['Rechnung'] = $row['Rechnung'];
 		}
 	}
