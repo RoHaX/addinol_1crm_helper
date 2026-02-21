@@ -8,6 +8,7 @@
 		['artikelliste.php', 'fas fa-oil-can', 'Artikelliste'],
 		['umsatzliste.php', 'fas fa-money-check-alt', 'Umsatzliste'],
 		['addinol_map.php', 'fas fa-map-marked', 'Addinol-Map'],
+		['middleware/firmen.php', 'fas fa-address-book', 'Firmen'],
 		['update_invoice.php', 'far fa-edit', 'Zahlungen korrigieren'],
 		['middleware/mailboard.php', 'fas fa-inbox', 'Mailboard'],
 		['offene_rechnungen.php', 'fas fa-money-bill', 'Offene Rechnungen'],
@@ -23,7 +24,7 @@
 					$href = $navLink[0];
 					$icon = $navLink[1];
 					$label = $navLink[2];
-					$isActive = $current === $href;
+					$isActive = $current === basename($href);
 					$fullHref = $rootPath . '/' . $href;
 				?>
 				<a class="btn btn-sm <?php echo $isActive ? 'btn-light' : 'btn-outline-light'; ?>" href="<?php echo $fullHref; ?>">
