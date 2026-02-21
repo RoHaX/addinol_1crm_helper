@@ -18,6 +18,9 @@ Kleine Sammlung interner Helfer-Skripte rund um 1CRM (Berichte, Exporte, Lager, 
 - `offene_betraege_kunde.php` – Offene Beträge je Kunde (Modal, Inline-Confirm)
 - `addinol_map.php` – OpenStreetMap/Leaflet Karte mit Filtern
 - `lagerheini.php` – Automatisierte Lagerbestell-Mail
+- `middleware/firmen.php` – Firmenliste + Detailansicht (inkl. Aktivitäten, E-Mail-Verlauf, Auf-einen-Blick)
+- `middleware/lieferstatus.php` – Addinol-Bestellungen, Dachser-Referenzcheck, Extraktions-Trigger
+- `bin/extract_addinol_refs.php` – PDF-Extraktion (`BE...`/`AT...`) aus Addinol-Rechnungsanhängen
 
 ## Abhängigkeiten (lokal eingebunden)
 
@@ -31,6 +34,7 @@ Kleine Sammlung interner Helfer-Skripte rund um 1CRM (Berichte, Exporte, Lager, 
 - Einige Seiten nutzen Modals (iframe) für Detail-Views (`embed=1`).
 - `lagerheini.php` versendet E-Mails, Texte werden zufällig aus Charakteren gewählt.
 - Karten-Daten kommen aus `accounts` + `accounts_cstm` (Latitude/Longitude).
+- Addinol-Rechnungs-PDFs liegen typischerweise unter `../files/upload/...` (über `notes.filename`).
 
 ## Agent Rules
 
@@ -66,6 +70,43 @@ Worker (CLI):
 ```
 php bin/worker.php
 ```
+
+### Lieferstatus / Addinol-Referenzen
+
+- Seite: `middleware/lieferstatus.php`
+- Datenbasis: `purchase_orders` (Addinol), optional verknüpfter `sales_orders`-Status.
+- Referenzquelle: `mw_addinol_refs.at_order_no` (Fallback: `BE...`/Bestellnummer).
+- `AT-Scan`: startet asynchronen Extraktionsjob für die gewählte Bestellung/Note (nur sichtbar wenn AT fehlt).
+- `Dachser`: Quick-Link zur Tracking-Suche mit `search=<AT...>` (nur sichtbar wenn AT vorhanden).
+- `Erneut extrahieren`: startet asynchronen Voll-/Teilscan im Hintergrund (kein Web-Timeout).
+- `API`: ruft `middleware/dachser_status.php` auf, parst Dachser-Seite serverseitig und speichert Ergebnisse.
+
+Gespeicherte Dachser-Felder in `mw_addinol_refs`:
+
+- `dachser_status` (z. B. `Zugestellt`)
+- `dachser_status_ts` (Zeitstempel aus `Status (...)`)
+- `dachser_via`
+- `dachser_info`
+- `dachser_last_checked_at`
+
+Extraktor (CLI, empfohlen mit festem PHP-Binary):
+
+```
+/opt/plesk/php/8.3/bin/php bin/extract_addinol_refs.php
+```
+
+Beispiele:
+
+```
+FORCE_RECHECK=1 LIMIT=5000 /opt/plesk/php/8.3/bin/php bin/extract_addinol_refs.php
+FORCE_RECHECK=1 TARGET_NOTE_ID=<note-id> LIMIT=20 /opt/plesk/php/8.3/bin/php bin/extract_addinol_refs.php
+FORCE_RECHECK=1 TARGET_PO_ID=<purchase-order-id> LIMIT=120 /opt/plesk/php/8.3/bin/php bin/extract_addinol_refs.php
+```
+
+Status-/Log-Dateien:
+
+- `logs/extract_addinol_refs.status.json`
+- `logs/extract_addinol_refs.log`
 
 ## Lokal testen
 

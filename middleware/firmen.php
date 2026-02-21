@@ -102,9 +102,236 @@
 		return '<span class="badge text-bg-' . $class . '"' . $title . '><i class="' . $icon . ' me-1"></i>' . htmlspecialchars($label) . '</span>';
 	}
 
+	function format_activity_status_badge(?string $status): string {
+		$raw = trim((string)$status);
+		$key = strtolower($raw);
+		$map = [
+			'planned' => ['Geplant', 'fas fa-calendar-alt', 'secondary'],
+			'held' => ['Erledigt', 'fas fa-check-circle', 'success'],
+			'not held' => ['Nicht erfolgt', 'fas fa-times-circle', 'danger'],
+			'completed' => ['Abgeschlossen', 'fas fa-check-double', 'success'],
+			'in progress' => ['In Arbeit', 'fas fa-spinner', 'info'],
+			'deferred' => ['Zurückgestellt', 'fas fa-pause-circle', 'warning'],
+			'pending input' => ['Wartet auf Input', 'fas fa-hourglass-half', 'warning'],
+			'not started' => ['Nicht begonnen', 'fas fa-minus-circle', 'secondary'],
+		];
+
+		$label = $raw !== '' ? $raw : '-';
+		$icon = 'fas fa-tag';
+		$class = 'secondary';
+		if (isset($map[$key])) {
+			$label = $map[$key][0];
+			$icon = $map[$key][1];
+			$class = $map[$key][2];
+		}
+
+		$title = $raw !== '' ? ' title="' . htmlspecialchars($raw, ENT_QUOTES) . '"' : '';
+		return '<span class="badge text-bg-' . $class . '"' . $title . '><i class="' . $icon . ' me-1"></i>' . htmlspecialchars($label) . '</span>';
+	}
+
+	function format_email_status_badge(?string $status, ?string $type): string {
+		$rawStatus = trim((string)$status);
+		$rawType = trim((string)$type);
+		$rawCombined = trim($rawStatus . ($rawStatus !== '' && $rawType !== '' ? ' / ' : '') . $rawType);
+		$key = strtolower($rawStatus !== '' ? $rawStatus : $rawType);
+
+		$map = [
+			'sent' => ['Gesendet', 'fas fa-paper-plane', 'primary'],
+			'received' => ['Empfangen', 'fas fa-inbox', 'success'],
+			'archived' => ['Archiviert', 'fas fa-archive', 'secondary'],
+			'draft' => ['Entwurf', 'fas fa-pencil-alt', 'warning'],
+			'read' => ['Gelesen', 'fas fa-envelope-open-text', 'info'],
+			'unread' => ['Ungelesen', 'fas fa-envelope', 'dark'],
+			'outbound' => ['Ausgehend', 'fas fa-paper-plane', 'primary'],
+			'inbound' => ['Eingehend', 'fas fa-inbox', 'success'],
+			'pick' => ['Zuordnen', 'fas fa-tags', 'secondary'],
+		];
+
+		$label = $rawCombined !== '' ? $rawCombined : '-';
+		$icon = 'fas fa-envelope';
+		$class = 'secondary';
+		if (isset($map[$key])) {
+			$label = $map[$key][0];
+			$icon = $map[$key][1];
+			$class = $map[$key][2];
+		}
+
+		$title = $rawCombined !== '' ? ' title="' . htmlspecialchars($rawCombined, ENT_QUOTES) . '"' : '';
+		return '<span class="badge text-bg-' . $class . '"' . $title . '><i class="' . $icon . ' me-1"></i>' . htmlspecialchars($label) . '</span>';
+	}
+
+	function build_detail_url(string $accountId, bool $currentQuotes, bool $currentInvoices, bool $currentActivities, bool $currentOrders, bool $currentEmails, array $overrides = []): string {
+		$params = [
+			'account_id' => $accountId,
+			'current_quotes' => $currentQuotes ? '1' : '0',
+			'current_invoices' => $currentInvoices ? '1' : '0',
+			'current_activities' => $currentActivities ? '1' : '0',
+			'current_orders' => $currentOrders ? '1' : '0',
+			'current_emails' => $currentEmails ? '1' : '0',
+		];
+		foreach ($overrides as $key => $val) {
+			$params[$key] = $val;
+		}
+		return 'firmen.php?' . http_build_query($params);
+	}
+
+	function shorten_text(?string $value, int $maxLen = 160): string {
+		$txt = trim(strip_tags((string)$value));
+		$txt = preg_replace('/\s+/', ' ', $txt);
+		if ($txt === '') {
+			return '';
+		}
+		if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+			if (mb_strlen($txt) <= $maxLen) {
+				return $txt;
+			}
+			return rtrim(mb_substr($txt, 0, $maxLen - 1)) . '...';
+		}
+		if (strlen($txt) <= $maxLen) {
+			return $txt;
+		}
+		return rtrim(substr($txt, 0, $maxLen - 1)) . '...';
+	}
+
+	function build_account_overview(mysqli $mysqli, string $accountId): array {
+		$overview = [
+			'open_quotes' => 0,
+			'open_orders' => 0,
+			'open_invoices' => 0,
+			'next_appointments' => [],
+			'latest_quote_products' => [],
+			'latest_notes' => [],
+		];
+
+		$openQuoteRows = fetch_all_assoc(
+			$mysqli,
+			"SELECT COUNT(*) AS cnt
+			 FROM quotes
+			 WHERE deleted = 0
+			   AND billing_account_id = ?
+			   AND valid_until >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)
+			   AND LOWER(COALESCE(quote_stage, '')) NOT IN ('closed accepted', 'closed lost', 'closed dead')",
+			's',
+			[$accountId]
+		);
+		$overview['open_quotes'] = (int)($openQuoteRows[0]['cnt'] ?? 0);
+
+		$openOrderRows = fetch_all_assoc(
+			$mysqli,
+			"SELECT COUNT(*) AS cnt
+			 FROM sales_orders
+			 WHERE deleted = 0
+			   AND billing_account_id = ?
+			   AND COALESCE(due_date, delivery_date, date_entered) >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)
+			   AND LOWER(COALESCE(so_stage, '')) NOT IN ('delivered', 'closed - shipped and invoiced')",
+			's',
+			[$accountId]
+		);
+		$overview['open_orders'] = (int)($openOrderRows[0]['cnt'] ?? 0);
+
+		$openInvoiceRows = fetch_all_assoc(
+			$mysqli,
+			"SELECT COUNT(*) AS cnt
+			 FROM invoice
+			 WHERE deleted = 0
+			   AND billing_account_id = ?
+			   AND invoice_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)
+			   AND COALESCE(amount_due, 0) > 0",
+			's',
+			[$accountId]
+		);
+		$overview['open_invoices'] = (int)($openInvoiceRows[0]['cnt'] ?? 0);
+
+		$overview['next_appointments'] = fetch_all_assoc(
+			$mysqli,
+			"SELECT a.module, a.id, a.name, a.date_start, a.status
+			 FROM (
+				SELECT 'Calls' AS module, c.id, c.name, c.date_start, c.status
+				FROM calls c
+				WHERE c.deleted = 0 AND c.date_start >= NOW()
+				  AND (c.account_id = ? OR (c.parent_type = 'Accounts' AND c.parent_id = ?))
+				UNION ALL
+				SELECT 'Meetings' AS module, m.id, m.name, m.date_start, m.status
+				FROM meetings m
+				WHERE m.deleted = 0 AND m.date_start >= NOW()
+				  AND (m.account_id = ? OR (m.parent_type = 'Accounts' AND m.parent_id = ?))
+			 ) a
+			 ORDER BY a.date_start ASC
+			 LIMIT 5",
+			'ssss',
+			[$accountId, $accountId, $accountId, $accountId]
+		);
+
+		$overview['latest_quote_products'] = fetch_all_assoc(
+			$mysqli,
+			"SELECT ql.related_id, ql.name, MAX(COALESCE(q.date_modified, q.date_entered)) AS last_offered_at
+			 FROM quote_lines ql
+			 INNER JOIN quotes q ON q.id = ql.quote_id
+			 WHERE q.deleted = 0
+			   AND ql.deleted = 0
+			   AND q.billing_account_id = ?
+			 GROUP BY ql.related_id, ql.name
+			 ORDER BY last_offered_at DESC
+			 LIMIT 5",
+			's',
+			[$accountId]
+		);
+
+		$overview['latest_notes'] = fetch_all_assoc(
+			$mysqli,
+			"SELECT id, name, description, date_modified
+			 FROM notes
+			 WHERE deleted = 0
+			   AND account_id = ?
+			 ORDER BY date_modified DESC, date_entered DESC
+			 LIMIT 3",
+			's',
+			[$accountId]
+		);
+
+		return $overview;
+	}
+
 	$q = trim($_GET['q'] ?? '');
 	$accountType = trim($_GET['account_type'] ?? '');
 	$accountId = trim($_GET['account_id'] ?? '');
+	$onlyCurrentQuotes = (($_GET['current_quotes'] ?? '1') !== '0');
+	$onlyCurrentInvoices = (($_GET['current_invoices'] ?? '1') !== '0');
+	$onlyCurrentActivities = (($_GET['current_activities'] ?? '1') !== '0');
+	$onlyCurrentOrders = (($_GET['current_orders'] ?? '1') !== '0');
+	$onlyCurrentEmails = (($_GET['current_emails'] ?? '1') !== '0');
+
+	if (($_GET['overview_json'] ?? '') === '1') {
+		header('Content-Type: application/json; charset=utf-8');
+		if ($accountId === '') {
+			http_response_code(400);
+			echo json_encode(['ok' => false, 'error' => 'missing_account_id']);
+			exit;
+		}
+		$firmRows = fetch_all_assoc(
+			$mysqli,
+			"SELECT id, ticker_symbol, name
+			 FROM accounts
+			 WHERE deleted = 0 AND id = ?
+			 LIMIT 1",
+			's',
+			[$accountId]
+		);
+		$firmRow = $firmRows[0] ?? null;
+		if (!$firmRow) {
+			http_response_code(404);
+			echo json_encode(['ok' => false, 'error' => 'not_found']);
+			exit;
+		}
+		$overviewJson = build_account_overview($mysqli, $accountId);
+		echo json_encode([
+			'ok' => true,
+			'firm' => $firmRow,
+			'overview' => $overviewJson,
+		]);
+		exit;
+	}
+
 	$localNoteFile = __DIR__ . '/../logs/firmen-notiz.html';
 	$localNoteHtml = '';
 	$noteSaved = false;
@@ -143,6 +370,17 @@
 	$quotes = [];
 	$salesOrders = [];
 	$invoices = [];
+	$soldProducts = [];
+	$activities = [];
+	$emailHistory = [];
+	$overview = [
+		'open_quotes' => 0,
+		'open_orders' => 0,
+		'open_invoices' => 0,
+		'next_appointments' => [],
+		'latest_quote_products' => [],
+		'latest_notes' => [],
+	];
 	$firms = [];
 
 	if ($isDetailView) {
@@ -173,7 +411,7 @@
 				$mysqli,
 				"SELECT id, prefix, quote_number, quote_stage, valid_until, amount
 				 FROM quotes
-				 WHERE deleted = 0 AND billing_account_id = ?
+				 WHERE deleted = 0 AND billing_account_id = ?" . ($onlyCurrentQuotes ? " AND valid_until >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
 				 ORDER BY valid_until DESC, quote_number DESC
 				 LIMIT 500",
 				's',
@@ -184,7 +422,7 @@
 				$mysqli,
 				"SELECT id, prefix, so_number, so_stage, due_date, delivery_date, amount
 				 FROM sales_orders
-				 WHERE deleted = 0 AND billing_account_id = ?
+				 WHERE deleted = 0 AND billing_account_id = ?" . ($onlyCurrentOrders ? " AND COALESCE(due_date, delivery_date, date_entered) >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
 				 ORDER BY due_date DESC, so_number DESC
 				 LIMIT 500",
 				's',
@@ -195,12 +433,74 @@
 				$mysqli,
 				"SELECT id, prefix, invoice_number, shipping_stage, invoice_date, due_date, amount, amount_due
 				 FROM invoice
-				 WHERE deleted = 0 AND billing_account_id = ?
+				 WHERE deleted = 0 AND billing_account_id = ?" . ($onlyCurrentInvoices ? " AND invoice_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
 				 ORDER BY invoice_date DESC, invoice_number DESC
 				 LIMIT 500",
 				's',
 				[$accountId]
 			);
+
+			$soldProducts = fetch_all_assoc(
+				$mysqli,
+				"SELECT il.related_id, il.name,
+						SUM(il.quantity) AS qty_total,
+						SUM(il.unit_price * il.quantity) AS amount_total,
+						MAX(il.unit_price) AS unit_price_latest
+				 FROM invoice_lines il
+				 INNER JOIN invoice i ON i.id = il.invoice_id
+				 WHERE i.deleted = 0
+				   AND il.deleted = 0
+				   AND i.billing_account_id = ?" . ($onlyCurrentInvoices ? " AND i.invoice_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
+				 GROUP BY il.related_id, il.name
+				 ORDER BY qty_total DESC, amount_total DESC
+				 LIMIT 500",
+				's',
+				[$accountId]
+			);
+
+			$activities = fetch_all_assoc(
+				$mysqli,
+				"SELECT a.activity_type, a.id, a.name, a.status, a.activity_date, a.activity_hint
+				 FROM (
+					SELECT 'Call' AS activity_type, c.id, c.name, c.status, c.date_start AS activity_date, c.phone_number AS activity_hint
+					FROM calls c
+					WHERE c.deleted = 0 AND (c.account_id = ? OR (c.parent_type = 'Accounts' AND c.parent_id = ?))
+
+					UNION ALL
+
+					SELECT 'Meeting' AS activity_type, m.id, m.name, m.status, m.date_start AS activity_date, m.location AS activity_hint
+					FROM meetings m
+					WHERE m.deleted = 0 AND (m.account_id = ? OR (m.parent_type = 'Accounts' AND m.parent_id = ?))
+
+					UNION ALL
+
+					SELECT 'Task' AS activity_type, t.id, t.name, t.status, COALESCE(t.date_due, t.date_start) AS activity_date, t.priority AS activity_hint
+					FROM tasks t
+					WHERE t.deleted = 0 AND (t.account_id = ? OR (t.parent_type = 'Accounts' AND t.parent_id = ?))
+				 ) a" . ($onlyCurrentActivities ? "
+				 WHERE a.activity_date >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
+				 ORDER BY a.activity_date DESC, a.id DESC
+				 LIMIT 500",
+				'ssssss',
+				[$accountId, $accountId, $accountId, $accountId, $accountId, $accountId]
+			);
+
+			$emailHistory = fetch_all_assoc(
+				$mysqli,
+				"SELECT DISTINCT e.id, e.name, e.date_start, e.from_addr, e.status, e.type, f.name AS folder_name
+				 FROM emails e
+				 LEFT JOIN emails_accounts ea ON ea.email_id = e.id AND ea.deleted = 0
+				 LEFT JOIN emails_folders f ON f.id = e.folder AND f.deleted = 0
+				 WHERE e.deleted = 0
+				   AND (e.account_id = ? OR ea.account_id = ? OR (e.parent_type = 'Accounts' AND e.parent_id = ?))" . ($onlyCurrentEmails ? "
+				   AND COALESCE(e.date_start, e.date_entered) >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
+				 ORDER BY e.date_start DESC, e.date_entered DESC
+				 LIMIT 500",
+				'sss',
+				[$accountId, $accountId, $accountId]
+			);
+
+			$overview = build_account_overview($mysqli, $accountId);
 		}
 	} else {
 		$where = ['a.deleted = 0'];
@@ -263,6 +563,9 @@
 	#localNoteSurface {
 		min-height: 0;
 	}
+	#firmsTable tbody tr.firm-row {
+		cursor: pointer;
+	}
 </style>
 </head>
 <body>
@@ -304,7 +607,89 @@
 					</div>
 				</div>
 				<div class="col-12 col-xl-8">
-					<div class="card shadow-sm h-100">
+					<div class="card shadow-sm mb-3">
+						<div class="card-header py-2"><strong>Auf Einen Blick</strong></div>
+						<div class="card-body">
+							<div class="row g-2 mb-3">
+								<div class="col-sm-4">
+									<div class="p-2 border rounded bg-light">
+										<div class="small text-muted">Offene Angebote</div>
+										<div class="h5 mb-0"><?php echo (int)$overview['open_quotes']; ?></div>
+									</div>
+								</div>
+								<div class="col-sm-4">
+									<div class="p-2 border rounded bg-light">
+										<div class="small text-muted">Offene Aufträge</div>
+										<div class="h5 mb-0"><?php echo (int)$overview['open_orders']; ?></div>
+									</div>
+								</div>
+								<div class="col-sm-4">
+									<div class="p-2 border rounded bg-light">
+										<div class="small text-muted">Offene Rechnungen</div>
+										<div class="h5 mb-0"><?php echo (int)$overview['open_invoices']; ?></div>
+									</div>
+								</div>
+							</div>
+
+							<div class="row g-3">
+								<div class="col-12 col-xxl-4">
+									<div class="small fw-semibold mb-1">Nächste Termine</div>
+									<?php if (empty($overview['next_appointments'])): ?>
+										<div class="text-muted small">Keine zukünftigen Termine.</div>
+									<?php else: ?>
+										<ul class="list-group list-group-flush">
+											<?php foreach ($overview['next_appointments'] as $row): ?>
+												<li class="list-group-item px-0 py-1">
+													<div class="small">
+														<strong><?php echo htmlspecialchars($row['date_start'] ?? ''); ?></strong><br>
+														<?php echo htmlspecialchars($row['name'] ?? ''); ?>
+														<span class="text-muted">(<?php echo htmlspecialchars($row['status'] ?? ''); ?>)</span>
+													</div>
+												</li>
+											<?php endforeach; ?>
+										</ul>
+									<?php endif; ?>
+								</div>
+								<div class="col-12 col-xxl-4">
+									<div class="small fw-semibold mb-1">Zuletzt angebotene Produkte</div>
+									<?php if (empty($overview['latest_quote_products'])): ?>
+										<div class="text-muted small">Keine Daten.</div>
+									<?php else: ?>
+										<ul class="list-group list-group-flush">
+											<?php foreach ($overview['latest_quote_products'] as $row): ?>
+												<li class="list-group-item px-0 py-1">
+													<div class="small">
+														<?php echo htmlspecialchars($row['name'] ?? ''); ?><br>
+														<span class="text-muted"><?php echo htmlspecialchars($row['last_offered_at'] ?? ''); ?></span>
+													</div>
+												</li>
+											<?php endforeach; ?>
+										</ul>
+									<?php endif; ?>
+								</div>
+								<div class="col-12 col-xxl-4">
+									<div class="small fw-semibold mb-1">Letzte Notizen</div>
+									<?php if (empty($overview['latest_notes'])): ?>
+										<div class="text-muted small">Keine Notizen.</div>
+									<?php else: ?>
+										<ul class="list-group list-group-flush">
+											<?php foreach ($overview['latest_notes'] as $row): ?>
+												<li class="list-group-item px-0 py-1">
+													<div class="small">
+														<?php if (!empty($row['name'])): ?><strong><?php echo htmlspecialchars($row['name']); ?></strong><br><?php endif; ?>
+														<?php echo htmlspecialchars(shorten_text($row['description'] ?? '', 130)); ?><br>
+														<span class="text-muted"><?php echo htmlspecialchars($row['date_modified'] ?? ''); ?></span>
+													</div>
+												</li>
+											<?php endforeach; ?>
+										</ul>
+									<?php endif; ?>
+								</div>
+							</div>
+						</div>
+					</div>
+
+					<div class="card shadow-sm">
 						<div class="card-header py-2"><strong>Kontakte</strong> <span class="text-muted">(<?php echo count($contacts); ?>)</span></div>
 						<div class="card-body">
 							<div class="table-responsive">
@@ -346,7 +731,15 @@
 			<div class="row g-3 mb-3">
 				<div class="col-12 col-xxl-6">
 					<div class="card shadow-sm h-100">
-						<div class="card-header py-2"><strong>Angebote</strong> <span class="text-muted">(<?php echo count($quotes); ?>)</span></div>
+						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+							<div><strong>Angebote</strong> <span class="text-muted">(<?php echo count($quotes); ?>)</span></div>
+							<div class="form-check form-switch mb-0">
+								<?php $quotesOnUrl = build_detail_url($accountId, true, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<?php $quotesOffUrl = build_detail_url($accountId, false, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentQuotes" <?php echo $onlyCurrentQuotes ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($quotesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($quotesOffUrl, ENT_QUOTES); ?>">
+								<label class="form-check-label small" for="toggleCurrentQuotes">Nur aktuelle</label>
+							</div>
+						</div>
 						<div class="card-body">
 							<div class="table-responsive">
 								<table id="quotesTable" class="table table-striped table-sm align-middle js-dt">
@@ -381,7 +774,15 @@
 				</div>
 				<div class="col-12 col-xxl-6">
 					<div class="card shadow-sm h-100">
-						<div class="card-header py-2"><strong>Rechnungen</strong> <span class="text-muted">(<?php echo count($invoices); ?>)</span></div>
+						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+							<div><strong>Rechnungen</strong> <span class="text-muted">(<?php echo count($invoices); ?>)</span></div>
+							<div class="form-check form-switch mb-0">
+								<?php $invoicesOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, true, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<?php $invoicesOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, false, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentInvoices" <?php echo $onlyCurrentInvoices ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($invoicesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($invoicesOffUrl, ENT_QUOTES); ?>">
+								<label class="form-check-label small" for="toggleCurrentInvoices">Nur aktuelle</label>
+							</div>
+						</div>
 						<div class="card-body">
 							<div class="table-responsive">
 								<table id="invoicesTable" class="table table-striped table-sm align-middle js-dt">
@@ -421,7 +822,15 @@
 			</div>
 
 			<div class="card shadow-sm mb-3">
-				<div class="card-header py-2"><strong>Aufträge</strong> <span class="text-muted">(<?php echo count($salesOrders); ?>)</span></div>
+				<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+					<div><strong>Aufträge</strong> <span class="text-muted">(<?php echo count($salesOrders); ?>)</span></div>
+					<div class="form-check form-switch mb-0">
+						<?php $ordersOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, true, $onlyCurrentEmails); ?>
+						<?php $ordersOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, false, $onlyCurrentEmails); ?>
+						<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentOrders" <?php echo $onlyCurrentOrders ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($ordersOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($ordersOffUrl, ENT_QUOTES); ?>">
+						<label class="form-check-label small" for="toggleCurrentOrders">Nur aktuelle</label>
+					</div>
+				</div>
 				<div class="card-body">
 					<div class="table-responsive">
 						<table id="ordersTable" class="table table-striped table-sm align-middle js-dt">
@@ -452,6 +861,141 @@
 								<?php endforeach; ?>
 							</tbody>
 						</table>
+					</div>
+				</div>
+			</div>
+
+			<div class="card shadow-sm mb-3">
+				<div class="card-header py-2">
+					<strong>Verkaufte Produkte</strong> <span class="text-muted">(<?php echo count($soldProducts); ?>)</span>
+				</div>
+				<div class="card-body">
+					<div class="table-responsive">
+						<table id="soldProductsTable" class="table table-striped table-sm align-middle js-dt">
+							<thead>
+								<tr>
+									<th>Artikel</th>
+									<th>Stück</th>
+									<th>Umsatz</th>
+									<th>Letzter Preis</th>
+									<th>1CRM</th>
+								</tr>
+							</thead>
+							<tbody>
+								<?php foreach ($soldProducts as $row): ?>
+									<tr>
+										<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+										<td><?php echo isset($row['qty_total']) ? number_format((float)$row['qty_total'], 2, ',', '.') : ''; ?></td>
+										<td><?php echo isset($row['amount_total']) ? number_format((float)$row['amount_total'], 2, ',', '.') : ''; ?></td>
+										<td><?php echo isset($row['unit_price_latest']) ? number_format((float)$row['unit_price_latest'], 2, ',', '.') : ''; ?></td>
+										<td>
+											<?php if (!empty($row['related_id'])): ?>
+												<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=ProductCatalog&action=DetailView&record=' . urlencode($row['related_id']); ?>">
+													<i class="fas fa-external-link-alt"></i> Öffnen
+												</a>
+											<?php endif; ?>
+										</td>
+									</tr>
+								<?php endforeach; ?>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
+			<div class="row g-3 mb-3">
+				<div class="col-12 col-xxl-6">
+					<div class="card shadow-sm h-100">
+						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+							<div><strong>Aktivitäten</strong> <span class="text-muted">(<?php echo count($activities); ?>)</span></div>
+							<div class="form-check form-switch mb-0">
+								<?php $activitiesOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, true, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<?php $activitiesOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, false, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentActivities" <?php echo $onlyCurrentActivities ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($activitiesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($activitiesOffUrl, ENT_QUOTES); ?>">
+								<label class="form-check-label small" for="toggleCurrentActivities">Nur aktuelle</label>
+							</div>
+						</div>
+						<div class="card-body">
+							<div class="table-responsive">
+								<table id="activitiesTable" class="table table-striped table-sm align-middle js-dt">
+									<thead>
+										<tr>
+											<th>Typ</th>
+											<th>Titel</th>
+											<th>Status</th>
+											<th>Datum</th>
+											<th>Hinweis</th>
+											<th>1CRM</th>
+										</tr>
+									</thead>
+									<tbody>
+										<?php foreach ($activities as $row): ?>
+											<?php
+												$type = (string)($row['activity_type'] ?? '');
+												$module = $type === 'Meeting' ? 'Meetings' : ($type === 'Task' ? 'Tasks' : 'Calls');
+											?>
+											<tr>
+												<td><?php echo htmlspecialchars($type); ?></td>
+												<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+												<td><?php echo format_activity_status_badge($row['status'] ?? ''); ?></td>
+												<td><?php echo htmlspecialchars($row['activity_date'] ?? ''); ?></td>
+												<td><?php echo htmlspecialchars($row['activity_hint'] ?? ''); ?></td>
+												<td>
+													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=' . urlencode($module) . '&action=DetailView&record=' . urlencode($row['id']); ?>">
+														<i class="fas fa-external-link-alt"></i> Öffnen
+													</a>
+												</td>
+											</tr>
+										<?php endforeach; ?>
+									</tbody>
+								</table>
+							</div>
+						</div>
+					</div>
+				</div>
+				<div class="col-12 col-xxl-6">
+					<div class="card shadow-sm h-100">
+						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+							<div><strong>E-Mail-Verlauf</strong> <span class="text-muted">(<?php echo count($emailHistory); ?>)</span></div>
+							<div class="form-check form-switch mb-0">
+								<?php $emailsOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, true); ?>
+								<?php $emailsOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, false); ?>
+								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentEmails" <?php echo $onlyCurrentEmails ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($emailsOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($emailsOffUrl, ENT_QUOTES); ?>">
+								<label class="form-check-label small" for="toggleCurrentEmails">Nur aktuelle</label>
+							</div>
+						</div>
+						<div class="card-body">
+							<div class="table-responsive">
+								<table id="emailHistoryTable" class="table table-striped table-sm align-middle js-dt">
+									<thead>
+										<tr>
+											<th>Datum</th>
+											<th>Betreff</th>
+											<th>Von</th>
+											<th>Status</th>
+											<th>Ordner</th>
+											<th>1CRM</th>
+										</tr>
+									</thead>
+									<tbody>
+										<?php foreach ($emailHistory as $row): ?>
+											<tr>
+												<td><?php echo htmlspecialchars($row['date_start'] ?? ''); ?></td>
+												<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+												<td><?php echo htmlspecialchars($row['from_addr'] ?? ''); ?></td>
+												<td><?php echo format_email_status_badge($row['status'] ?? '', $row['type'] ?? ''); ?></td>
+												<td><?php echo htmlspecialchars($row['folder_name'] ?? ''); ?></td>
+												<td>
+													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Emails&action=DetailView&record=' . urlencode($row['id']); ?>">
+														<i class="fas fa-external-link-alt"></i> Öffnen
+													</a>
+												</td>
+											</tr>
+										<?php endforeach; ?>
+									</tbody>
+								</table>
+							</div>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -540,7 +1084,7 @@
 								</thead>
 								<tbody>
 									<?php foreach ($firms as $row): ?>
-										<tr>
+										<tr class="firm-row" data-account-id="<?php echo htmlspecialchars($row['id'] ?? '', ENT_QUOTES); ?>" data-account-name="<?php echo htmlspecialchars($row['name'] ?? '', ENT_QUOTES); ?>" data-account-ticker="<?php echo htmlspecialchars($row['ticker_symbol'] ?? '', ENT_QUOTES); ?>">
 											<td><?php echo htmlspecialchars($row['ticker_symbol'] ?? ''); ?></td>
 											<td>
 												<div><?php echo htmlspecialchars($row['name'] ?? ''); ?></div>
@@ -564,7 +1108,7 @@
 											</td>
 											<td><?php echo isset($row['balance']) ? number_format((float)$row['balance'], 2, ',', '.') : ''; ?></td>
 											<td>
-												<a class="btn btn-sm btn-outline-primary" href="<?php echo 'firmen.php?account_id=' . urlencode($row['id']); ?>">
+												<a class="btn btn-sm btn-outline-primary detail-link" href="<?php echo 'firmen.php?account_id=' . urlencode($row['id']); ?>">
 													<i class="fas fa-eye"></i> Öffnen
 												</a>
 											</td>
@@ -573,6 +1117,26 @@
 								</tbody>
 							</table>
 						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="modal fade" id="firmQuickModal" tabindex="-1" aria-labelledby="firmQuickModalLabel" aria-hidden="true">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title" id="firmQuickModalLabel">Auf Einen Blick</h5>
+						<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+					</div>
+					<div class="modal-body" id="firmQuickModalBody">
+						<div class="text-muted">Lade Daten...</div>
+					</div>
+					<div class="modal-footer">
+						<a href="#" class="btn btn-outline-primary" id="firmQuickModalOpenDetail">
+							<i class="fas fa-eye"></i> Detailansicht öffnen
+						</a>
+						<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Schließen</button>
 					</div>
 				</div>
 			</div>
@@ -622,6 +1186,128 @@ document.addEventListener('DOMContentLoaded', () => {
 			language: dtLang
 		});
 	}
+	if (document.getElementById('soldProductsTable')) {
+		$('#soldProductsTable').DataTable({
+			order: [[1, 'desc']],
+			pageLength: 25,
+			language: dtLang
+		});
+	}
+	if (document.getElementById('activitiesTable')) {
+		$('#activitiesTable').DataTable({
+			order: [[3, 'desc']],
+			pageLength: 25,
+			language: dtLang
+		});
+	}
+	if (document.getElementById('emailHistoryTable')) {
+		$('#emailHistoryTable').DataTable({
+			order: [[0, 'desc']],
+			pageLength: 25,
+			language: dtLang
+		});
+	}
+	if (document.getElementById('firmsTable')) {
+		const modalEl = document.getElementById('firmQuickModal');
+		const modalBodyEl = document.getElementById('firmQuickModalBody');
+		const modalTitleEl = document.getElementById('firmQuickModalLabel');
+		const modalOpenDetailEl = document.getElementById('firmQuickModalOpenDetail');
+		const modal = modalEl ? new bootstrap.Modal(modalEl) : null;
+
+		const escapeHtml = (value) => String(value ?? '')
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#039;');
+
+		const renderList = (items, rowBuilder, emptyText) => {
+			if (!items || !items.length) {
+				return '<div class="text-muted small">' + escapeHtml(emptyText) + '</div>';
+			}
+			return '<ul class="list-group list-group-flush">' + items.map((item) => rowBuilder(item)).join('') + '</ul>';
+		};
+
+		document.querySelectorAll('#firmsTable tbody tr.firm-row').forEach((rowEl) => {
+			rowEl.addEventListener('click', async (ev) => {
+				const target = ev.target;
+				if (target && target.closest('a, button, input, select, textarea, label')) {
+					return;
+				}
+				const accountId = rowEl.getAttribute('data-account-id') || '';
+				const accountName = rowEl.getAttribute('data-account-name') || '';
+				const accountTicker = rowEl.getAttribute('data-account-ticker') || '';
+				if (!accountId || !modal || !modalBodyEl || !modalTitleEl || !modalOpenDetailEl) {
+					return;
+				}
+
+				modalTitleEl.textContent = 'Auf Einen Blick: ' + accountTicker + ' ' + accountName;
+				modalBodyEl.innerHTML = '<div class="text-muted">Lade Daten...</div>';
+				modalOpenDetailEl.setAttribute('href', 'firmen.php?account_id=' + encodeURIComponent(accountId));
+				modal.show();
+
+				try {
+					const url = 'firmen.php?overview_json=1&account_id=' + encodeURIComponent(accountId);
+					const response = await fetch(url, { credentials: 'same-origin' });
+					const data = await response.json();
+					if (!response.ok || !data || !data.ok || !data.overview) {
+						throw new Error('invalid_response');
+					}
+
+					const overview = data.overview;
+					const openBlocks = [];
+					if ((overview.open_quotes || 0) > 0) {
+						openBlocks.push('<div class="col-sm-4"><div class="p-2 border rounded bg-light"><div class="small text-muted">Offene Angebote</div><div class="h5 mb-0">' + escapeHtml(overview.open_quotes) + '</div></div></div>');
+					}
+					if ((overview.open_orders || 0) > 0) {
+						openBlocks.push('<div class="col-sm-4"><div class="p-2 border rounded bg-light"><div class="small text-muted">Offene Aufträge</div><div class="h5 mb-0">' + escapeHtml(overview.open_orders) + '</div></div></div>');
+					}
+					if ((overview.open_invoices || 0) > 0) {
+						openBlocks.push('<div class="col-sm-4"><div class="p-2 border rounded bg-light"><div class="small text-muted">Offene Rechnungen</div><div class="h5 mb-0">' + escapeHtml(overview.open_invoices) + '</div></div></div>');
+					}
+
+					const appointmentsHtml = renderList(
+						overview.next_appointments || [],
+						(item) => '<li class="list-group-item px-0 py-1"><div class="small"><strong>' + escapeHtml(item.date_start || '') + '</strong><br>' + escapeHtml(item.name || '') + ' <span class="text-muted">(' + escapeHtml(item.status || '') + ')</span></div></li>',
+						'Keine zukünftigen Termine.'
+					);
+					const productsHtml = renderList(
+						overview.latest_quote_products || [],
+						(item) => '<li class="list-group-item px-0 py-1"><div class="small">' + escapeHtml(item.name || '') + '<br><span class="text-muted">' + escapeHtml(item.last_offered_at || '') + '</span></div></li>',
+						'Keine Daten.'
+					);
+						const notesHtml = renderList(
+							overview.latest_notes || [],
+							(item) => {
+								const title = item.name ? '<strong>' + escapeHtml(item.name) + '</strong><br>' : '';
+								const rawDesc = (item.description || '').replace(/\s+/g, ' ').trim();
+								const shortDesc = rawDesc.length > 180 ? (rawDesc.slice(0, 180) + '...') : rawDesc;
+								return '<li class="list-group-item px-0 py-1"><div class="small">' + title + escapeHtml(shortDesc) + '<br><span class="text-muted">' + escapeHtml(item.date_modified || '') + '</span></div></li>';
+							},
+							'Keine Notizen.'
+						);
+
+					modalBodyEl.innerHTML =
+						(openBlocks.length ? '<div class="row g-2 mb-3">' + openBlocks.join('') + '</div>' : '') +
+						'<div class="row g-3">' +
+						'<div class="col-12 col-md-4"><div class="small fw-semibold mb-1">Nächste Termine</div>' + appointmentsHtml + '</div>' +
+						'<div class="col-12 col-md-4"><div class="small fw-semibold mb-1">Zuletzt angebotene Produkte</div>' + productsHtml + '</div>' +
+						'<div class="col-12 col-md-4"><div class="small fw-semibold mb-1">Letzte Notizen</div>' + notesHtml + '</div>' +
+						'</div>';
+				} catch (e) {
+					modalBodyEl.innerHTML = '<div class="alert alert-warning py-2 mb-0">Daten konnten nicht geladen werden.</div>';
+				}
+			});
+		});
+	}
+	document.querySelectorAll('.current-toggle').forEach((toggle) => {
+		toggle.addEventListener('change', () => {
+			const targetUrl = toggle.checked ? toggle.getAttribute('data-url-on') : toggle.getAttribute('data-url-off');
+			if (targetUrl) {
+				window.location.href = targetUrl;
+			}
+		});
+	});
 	const noteSurface = document.getElementById('localNoteSurface');
 	const noteHtmlField = document.getElementById('localNoteHtml');
 	if (noteSurface && noteHtmlField) {

@@ -7,3 +7,16 @@ define('MW_IMAP_PASS', '6ua#$45eQ5');
 define('MW_IMAP_FLAGS', '/imap/ssl');
 define('MW_IMAP_MAILBOXES', 'INBOX');
 define('MW_ACTION_KEY', 'pM7zvG3m9hL2QnL8sR1xX3dD0aF6eB9uP5fA8kZ2rN1sV7qP3');
+
+// Optional Dachser shipment-status API config (used by middleware/dachser_status.php)
+define('MW_DACHSER_API_STATUS_URL', 'https://api-gateway.dachser.com');
+// define('MW_DACHSER_API_REFERENCE_PARAM', 'referenceNumber');
+// define('MW_DACHSER_API_KEY', '...');
+// define('MW_DACHSER_API_BEARER', '...');
+// define('MW_DACHSER_API_TIMEOUT', 20);
+
+// Optional Dachser Tracking URL base for quick-open from Lieferstatus.
+// Must end with "search=" so reference is appended automatically.
+// Example:
+// define('MW_DACHSER_TRACKING_URL_BASE', 'https://elogistics.dachser.com/shp2s/?sesid=...&javalocale=de_DE&search=');
+// define('MW_DACHSER_TRACKING_TIMEOUT', 20);

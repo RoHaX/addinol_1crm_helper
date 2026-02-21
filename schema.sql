@@ -56,3 +56,12 @@ CREATE TABLE IF NOT EXISTS mw_run_log (
 	KEY idx_type_started (type, started_at),
 	UNIQUE KEY uniq_run_id (run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+-- Existing table in this project (created separately): mw_addinol_refs
+-- Ensure Dachser tracking columns exist.
+ALTER TABLE mw_addinol_refs
+	ADD COLUMN IF NOT EXISTS dachser_status VARCHAR(191) NULL AFTER at_order_no,
+	ADD COLUMN IF NOT EXISTS dachser_status_ts DATETIME NULL AFTER dachser_status,
+	ADD COLUMN IF NOT EXISTS dachser_via VARCHAR(255) NULL AFTER dachser_status_ts,
+	ADD COLUMN IF NOT EXISTS dachser_info VARCHAR(255) NULL AFTER dachser_via,
+	ADD COLUMN IF NOT EXISTS dachser_last_checked_at DATETIME NULL AFTER dachser_info;
