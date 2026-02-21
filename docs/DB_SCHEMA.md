@@ -64,3 +64,28 @@ Fields:
 Indexes:
 - `uniq_run_id` unique (`run_id`).
 - `idx_type_started` (`type`, `started_at`).
+
+## Table: `mw_addinol_refs`
+
+Stores extracted Addinol references from PDF invoices and maps them to purchase orders.
+
+Fields:
+- `id` BIGINT PK.
+- `sales_order_id` CHAR(36): linked purchase order id (historical naming kept).
+- `be_order_no` VARCHAR(64): order number like `BE2026-85`.
+- `at_order_no` VARCHAR(64): Addinol order/shipment ref like `AT308310` (may be empty if not yet available in PDF).
+- `dachser_status` VARCHAR(191): last parsed Dachser status label (e.g. `Zugestellt`).
+- `dachser_status_ts` DATETIME: status timestamp from Dachser page (parsed from `Status (dd.mm.yyyy hh:mm)`).
+- `dachser_via` VARCHAR(255): parsed `Via` field from Dachser page.
+- `dachser_info` VARCHAR(255): parsed `Info` field from Dachser page.
+- `dachser_last_checked_at` DATETIME: when the Dachser page was last checked by middleware.
+- `note_id` CHAR(36): source note (PDF attachment) id.
+- `email_id` CHAR(36): source email id (nullable).
+- `source_filename` VARCHAR(255): filename used for extraction.
+- `extracted_at`, `updated_at`: timestamps.
+
+Indexes / constraints:
+- `uniq_sales_order` unique (`sales_order_id`).
+- `uniq_note` unique (`note_id`).
+- `idx_be_order_no` (`be_order_no`).
+- `idx_at_order_no` (`at_order_no`).
