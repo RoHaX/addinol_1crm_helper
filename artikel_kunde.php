@@ -2,8 +2,12 @@
 	$link = mysqli_connect('localhost', 'addinol_usr', 'lwT1e99~', 'addinol_crm');
 	mysqli_set_charset($link, "utf8");
 	
-	$strProductID = $_GET['id'];
-	$strProduct = $_GET['aname'];
+		$strProductID = trim((string)($_GET['id'] ?? ''));
+		$strProduct = trim((string)($_GET['aname'] ?? ''));
+		if ($strProduct === '') {
+			$strProduct = 'Artikel Kunden';
+		}
+		$safeProductID = mysqli_real_escape_string($link, $strProductID);
 	
 ?>
 <!doctype html>
@@ -22,8 +26,8 @@
 	<?php require_once __DIR__ . '/navbar.php'; ?>
 	<main class="container-fluid py-3">
 		<h1 class="h4 mb-3">
-<?php 
-	print $strProduct; 
+<?php
+	print htmlspecialchars($strProduct, ENT_QUOTES);
 ?>	
 		</h1>
 <?php } else { ?>
@@ -36,10 +40,10 @@
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='artikel-kunde-table' class='table table-sm table-striped table-hover align-middle'>\n";
 
-	$strSQL = "SELECT accounts.name, invoice.billing_account_id, invoice.deleted, invoice_lines.deleted, Sum(invoice_lines.quantity) AS Anzahl, invoice_lines.related_id
-		FROM accounts INNER JOIN (invoice_lines INNER JOIN invoice ON invoice_lines.invoice_id = invoice.id) ON accounts.id = invoice.billing_account_id
-		GROUP BY accounts.name, invoice.billing_account_id, invoice.deleted, invoice_lines.deleted, invoice_lines.related_id
-		HAVING (((invoice.deleted)=0) AND ((invoice_lines.deleted)=0) AND ((invoice_lines.related_id)='".$strProductID."'))";
+		$strSQL = "SELECT accounts.name, invoice.billing_account_id, invoice.deleted, invoice_lines.deleted, Sum(invoice_lines.quantity) AS Anzahl, invoice_lines.related_id
+			FROM accounts INNER JOIN (invoice_lines INNER JOIN invoice ON invoice_lines.invoice_id = invoice.id) ON accounts.id = invoice.billing_account_id
+			GROUP BY accounts.name, invoice.billing_account_id, invoice.deleted, invoice_lines.deleted, invoice_lines.related_id
+			HAVING (((invoice.deleted)=0) AND ((invoice_lines.deleted)=0) AND ((invoice_lines.related_id)='" . $safeProductID . "'))";
 
 	print "\t<thead class='table-light'><tr><th>Name</th><th>Stück</th></tr></thead>\n";
 	print "\t<tfoot class='table-light'><tr><th>Name</th><th>Stück</th></tr></tfoot>\n";

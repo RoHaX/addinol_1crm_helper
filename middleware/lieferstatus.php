@@ -148,10 +148,30 @@
 	$stage = trim($_GET['stage'] ?? '');
 	$dachserTrackingBase = trim((string)(getenv('DACHSER_TRACKING_URL_BASE')
 		?: (defined('MW_DACHSER_TRACKING_URL_BASE') ? MW_DACHSER_TRACKING_URL_BASE : 'https://elogistics.dachser.com/shp2s/?javalocale=de_DE&search=')));
-	$logsDir = realpath(__DIR__ . '/../logs') ?: (__DIR__ . '/../logs');
-	$statusFile = rtrim($logsDir, '/') . '/extract_addinol_refs.status.json';
-	$logFile = rtrim($logsDir, '/') . '/extract_addinol_refs.log';
-	$queueMessage = trim((string)($_GET['queue_msg'] ?? ''));
+		$logsDir = realpath(__DIR__ . '/../logs') ?: (__DIR__ . '/../logs');
+		$statusFile = rtrim($logsDir, '/') . '/extract_addinol_refs.status.json';
+		$logFile = rtrim($logsDir, '/') . '/extract_addinol_refs.log';
+		$queueMessage = trim((string)($_GET['queue_msg'] ?? ''));
+
+		if (($_GET['ajax_extract_status'] ?? '') === '1') {
+			header('Content-Type: application/json; charset=utf-8');
+			$status = null;
+			if (is_file($statusFile)) {
+				$json = (string)file_get_contents($statusFile);
+				$decoded = json_decode($json, true);
+				if (is_array($decoded)) {
+					$status = $decoded;
+				}
+			}
+			$logTail = read_log_tail($logFile, 50);
+			echo json_encode([
+				'ok' => true,
+				'status' => $status,
+				'log_tail' => $logTail,
+				'ts' => date('c'),
+			], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+			exit;
+		}
 
 	if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 		$action = trim((string)($_POST['action'] ?? ''));
@@ -285,6 +305,7 @@
 	<div class="d-flex align-items-center justify-content-between mb-3">
 		<h1 class="h3 mb-0">Lieferstatus</h1>
 		<div class="d-flex gap-2">
+			<?php $isExtractorRunning = !empty($extractStatus['running']); ?>
 			<form method="post" class="d-flex align-items-center gap-2">
 				<input type="hidden" name="action" value="reextract_refs">
 				<input type="hidden" name="force" value="1">
@@ -294,55 +315,39 @@
 					<i class="fas fa-sync-alt"></i> Erneut extrahieren
 				</button>
 			</form>
+			<button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#extractStatusModal">
+				<i class="fas fa-info-circle"></i> Extractor-Status
+				<?php if ($isExtractorRunning): ?>
+					<span class="badge text-bg-warning ms-1">läuft</span>
+				<?php endif; ?>
+			</button>
 			<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="https://elogistics.dachser.com/login/home?2">
 				<i class="fas fa-external-link-alt"></i> Dachser öffnen
 			</a>
 		</div>
 	</div>
 
-	<div class="alert alert-info py-2">
-		<strong>Workflow:</strong> Addinol-Bestellung auswählen, AT-Nummer kopieren, dann in Dachser unter <em>Referenz-Nummer</em> prüfen.
-	</div>
-
 	<?php if ($queueMessage !== ''): ?>
 		<div class="alert alert-secondary py-2"><?php echo htmlspecialchars($queueMessage); ?></div>
 	<?php endif; ?>
 
-	<?php if ($extractStatus !== null): ?>
-		<?php $isRunning = !empty($extractStatus['running']); ?>
-		<div class="alert <?php echo $isRunning ? 'alert-warning' : 'alert-light'; ?> py-2" id="extractStatusBox" data-running="<?php echo $isRunning ? '1' : '0'; ?>">
-			<div>
-				<strong>Extractor-Status:</strong>
-				<?php echo $isRunning ? 'läuft' : 'inaktiv'; ?>
-				<?php if (!empty($extractStatus['started_at'])): ?>
-					| Start: <?php echo htmlspecialchars((string)$extractStatus['started_at']); ?>
-				<?php endif; ?>
-				<?php if (!empty($extractStatus['finished_at'])): ?>
-					| Ende: <?php echo htmlspecialchars((string)$extractStatus['finished_at']); ?>
-				<?php endif; ?>
-				<?php if (isset($extractStatus['exit_code'])): ?>
-					| Exit: <?php echo (int)$extractStatus['exit_code']; ?>
-				<?php endif; ?>
-				<?php if (!empty($extractStatus['limit'])): ?>
-					| Limit: <?php echo (int)$extractStatus['limit']; ?>
-				<?php endif; ?>
-				<?php if (isset($extractStatus['target_note_id']) && (string)$extractStatus['target_note_id'] !== ''): ?>
-					| Note: <?php echo htmlspecialchars((string)$extractStatus['target_note_id']); ?>
-				<?php endif; ?>
-				<?php if (isset($extractStatus['target_po_id']) && (string)$extractStatus['target_po_id'] !== ''): ?>
-					| PO: <?php echo htmlspecialchars((string)$extractStatus['target_po_id']); ?>
-				<?php endif; ?>
-			</div>
-			<?php if (!empty($extractStatus['stats']) && is_array($extractStatus['stats'])): ?>
-				<div class="small mt-1 text-muted">
-					Stats: <?php echo htmlspecialchars(json_encode($extractStatus['stats'], JSON_UNESCAPED_SLASHES)); ?>
+		<div class="modal fade" id="extractStatusModal" tabindex="-1" aria-labelledby="extractStatusModalLabel" aria-hidden="true">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title" id="extractStatusModalLabel"><i class="fas fa-info-circle me-2"></i>Extractor-Status</h5>
+						<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+					</div>
+					<div class="modal-body">
+						<div id="extractStatusAlert" class="alert alert-light py-2 mb-3">
+							<div id="extractStatusMeta">Lade aktuellen Status...</div>
+							<div class="small mt-1 text-muted" id="extractStatusStats"></div>
+						</div>
+						<pre class="mb-0 small bg-light border rounded p-2" id="extractStatusLog" style="max-height: 360px; overflow:auto;">Lade Log...</pre>
+					</div>
 				</div>
-			<?php endif; ?>
-			<?php if ($extractLogTail): ?>
-				<pre class="mt-2 mb-0 small" style="max-height: 220px; overflow:auto;"><?php echo htmlspecialchars(implode("\n", $extractLogTail)); ?></pre>
-			<?php endif; ?>
+			</div>
 		</div>
-	<?php endif; ?>
 
 	<form method="get" class="row g-2 align-items-end mb-3">
 		<div class="col-sm-5 col-md-4 col-lg-3">
@@ -522,13 +527,6 @@
 <script src="../assets/bootstrap/bootstrap.bundle.min.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-	const statusBox = document.getElementById('extractStatusBox');
-	if (statusBox && statusBox.getAttribute('data-running') === '1') {
-		setTimeout(() => {
-			window.location.reload();
-		}, 7000);
-	}
-
 	$('#deliveryTable').DataTable({
 		order: [[4, 'desc']],
 		pageLength: 50,
@@ -538,6 +536,12 @@ document.addEventListener('DOMContentLoaded', () => {
 	const toastEl = document.getElementById('copyToast');
 	const toastBody = document.getElementById('copyToastBody');
 	const toast = toastEl ? new bootstrap.Toast(toastEl) : null;
+	const extractStatusModalEl = document.getElementById('extractStatusModal');
+	const extractStatusMeta = document.getElementById('extractStatusMeta');
+	const extractStatusStats = document.getElementById('extractStatusStats');
+	const extractStatusLog = document.getElementById('extractStatusLog');
+	const extractStatusAlert = document.getElementById('extractStatusAlert');
+	let extractStatusTimer = null;
 	const apiStatusModalEl = document.getElementById('apiStatusModal');
 	const apiStatusModal = apiStatusModalEl ? new bootstrap.Modal(apiStatusModalEl) : null;
 	const apiStatusOutput = document.getElementById('apiStatusOutput');
@@ -560,6 +564,79 @@ document.addEventListener('DOMContentLoaded', () => {
 		}
 		document.body.removeChild(ta);
 	};
+
+	const renderExtractStatus = (data) => {
+		const status = data && data.status ? data.status : null;
+		const lines = data && Array.isArray(data.log_tail) ? data.log_tail : [];
+		if (!status) {
+			if (extractStatusMeta) extractStatusMeta.textContent = 'Noch kein Extractor-Status vorhanden.';
+			if (extractStatusStats) extractStatusStats.textContent = '';
+			if (extractStatusLog) extractStatusLog.textContent = lines.length ? lines.join('\n') : 'Kein Log vorhanden.';
+			if (extractStatusAlert) {
+				extractStatusAlert.classList.remove('alert-warning');
+				extractStatusAlert.classList.add('alert-light');
+			}
+			return;
+		}
+
+		const running = !!status.running;
+		const parts = ['Status: ' + (running ? 'läuft' : 'inaktiv')];
+		if (status.started_at) parts.push('Start: ' + status.started_at);
+		if (status.finished_at) parts.push('Ende: ' + status.finished_at);
+		if (typeof status.exit_code !== 'undefined') parts.push('Exit: ' + status.exit_code);
+		if (status.limit) parts.push('Limit: ' + status.limit);
+		if (status.target_note_id) parts.push('Note: ' + status.target_note_id);
+		if (status.target_po_id) parts.push('PO: ' + status.target_po_id);
+
+		if (extractStatusMeta) extractStatusMeta.textContent = parts.join(' | ');
+		if (extractStatusStats) {
+			if (status.stats && typeof status.stats === 'object') {
+				extractStatusStats.textContent = 'Stats: ' + JSON.stringify(status.stats);
+			} else {
+				extractStatusStats.textContent = '';
+			}
+		}
+		if (extractStatusLog) extractStatusLog.textContent = lines.length ? lines.join('\n') : 'Kein Log vorhanden.';
+		if (extractStatusAlert) {
+			extractStatusAlert.classList.toggle('alert-warning', running);
+			extractStatusAlert.classList.toggle('alert-light', !running);
+		}
+	};
+
+	const loadExtractStatus = async () => {
+		try {
+			const resp = await fetch('lieferstatus.php?ajax_extract_status=1', { cache: 'no-store' });
+			const json = await resp.json();
+			if (!json || !json.ok) {
+				throw new Error('invalid response');
+			}
+			renderExtractStatus(json);
+		} catch (e) {
+			if (extractStatusMeta) extractStatusMeta.textContent = 'Status konnte nicht geladen werden.';
+			if (extractStatusStats) extractStatusStats.textContent = '';
+			if (extractStatusLog) extractStatusLog.textContent = 'Fehler beim Laden: ' + (e && e.message ? e.message : 'unknown');
+			if (extractStatusAlert) {
+				extractStatusAlert.classList.remove('alert-warning');
+				extractStatusAlert.classList.add('alert-light');
+			}
+		}
+	};
+
+	if (extractStatusModalEl) {
+		extractStatusModalEl.addEventListener('shown.bs.modal', () => {
+			loadExtractStatus();
+			if (extractStatusTimer) {
+				clearInterval(extractStatusTimer);
+			}
+			extractStatusTimer = setInterval(loadExtractStatus, 5000);
+		});
+		extractStatusModalEl.addEventListener('hidden.bs.modal', () => {
+			if (extractStatusTimer) {
+				clearInterval(extractStatusTimer);
+				extractStatusTimer = null;
+			}
+		});
+	}
 
 	document.querySelectorAll('.copy-btn').forEach((btn) => {
 		btn.addEventListener('click', async () => {

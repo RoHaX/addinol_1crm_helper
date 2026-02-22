@@ -2,7 +2,8 @@
 	$link = mysqli_connect('localhost', 'addinol_usr', 'lwT1e99~', 'addinol_crm');
 	mysqli_set_charset($link, "utf8");
 	
-	$strAccount = $_GET['id'];
+		$strAccount = trim((string)($_GET['id'] ?? ''));
+		$safeAccount = mysqli_real_escape_string($link, $strAccount);
 	
 ?>
 <!doctype html>
@@ -33,10 +34,10 @@
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='kunde-artikel-table' class='table table-sm table-striped table-hover align-middle'>\n";
 
-	$strSQL = "SELECT invoice.billing_account_id, invoice_lines.related_id, invoice.deleted, invoice_lines.deleted, invoice_lines.name, Sum(invoice_lines.quantity) AS Stueck, Sum(invoice_lines.unit_price*invoice_lines.quantity) AS Betrag, invoice_lines.unit_price as Stueckpreis
-		FROM invoice_lines INNER JOIN invoice ON invoice_lines.invoice_id = invoice.id
-		GROUP BY invoice.deleted, invoice_lines.deleted, invoice_lines.name, invoice_lines.unit_price
-		HAVING (((invoice.billing_account_id)='".$strAccount."') AND ((invoice.deleted)=0) AND ((invoice_lines.deleted)=0))";
+		$strSQL = "SELECT invoice.billing_account_id, invoice_lines.related_id, invoice.deleted, invoice_lines.deleted, invoice_lines.name, Sum(invoice_lines.quantity) AS Stueck, Sum(invoice_lines.unit_price*invoice_lines.quantity) AS Betrag, invoice_lines.unit_price as Stueckpreis
+			FROM invoice_lines INNER JOIN invoice ON invoice_lines.invoice_id = invoice.id
+			GROUP BY invoice.deleted, invoice_lines.deleted, invoice_lines.name, invoice_lines.unit_price
+			HAVING (((invoice.billing_account_id)='" . $safeAccount . "') AND ((invoice.deleted)=0) AND ((invoice_lines.deleted)=0))";
 
 	print "\t<thead class='table-light'><tr><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Stückpreis</th></tr></thead>\n";
 	print "\t<tfoot class='table-light'><tr><th>Artikel</th><th>Stück</th><th>Betrag</th><th>Stückpreis</th></tr></tfoot>\n";

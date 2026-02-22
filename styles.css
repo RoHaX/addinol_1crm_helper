@@ -6,14 +6,23 @@ body {
 	background: #E6EAE9;
 }
 
+:root {
+	--brand-primary: #00929b;
+	--brand-primary-dark: #007d85;
+	--brand-primary-soft: #dff4f6;
+	--surface-bg: #f4f7f8;
+	--text-strong: #1d2a30;
+	--text-muted: #4f6b72;
+}
+
 a {
-	color: #009933;
+	color: var(--brand-primary);
 }
 
 a.gro {
 	font-size: 15px;
 	font-weight: bold;
-	color: #009933;
+	color: var(--brand-primary);
 	text-decoration: none;
 }
 
@@ -24,7 +33,7 @@ li {
 }
 
 a:hover {
-		color: #004000;	
+		color: var(--brand-primary-dark);	
 }
 
 caption {
@@ -76,11 +85,11 @@ td.neg {
 }
 
 select {
-	border: 1px solid #006600; 
+	border: 1px solid var(--brand-primary-dark); 
 	padding: 3px 8px;  
 	font-weight: bold; 
 	border-radius: 5px; 
-	background-color: #009933; 
+	background-color: var(--brand-primary); 
 	color: #fff;
 }
 select:hover {
@@ -89,13 +98,13 @@ box-shadow: 0 0 1em #999999;
 }
 
 button {
-	border: 1px solid #006600; 
+	border: 1px solid var(--brand-primary-dark); 
 	font-size: 12px; 
 	margin: 4px;
 	padding: 3px 8px; 
 	font-weight: bold; 
 	border-radius: 5px; 
-	background-color: #009933; 
+	background-color: var(--brand-primary); 
 	color: #fff;
 }
 
@@ -144,3 +153,110 @@ th.specalt {
 	color: #797268;
 }
 */
+
+/* Brand refresh */
+body {
+	background:
+		radial-gradient(circle at 0% 0%, rgba(0, 146, 155, 0.14), transparent 38%),
+		radial-gradient(circle at 100% 100%, rgba(0, 146, 155, 0.10), transparent 36%),
+		var(--surface-bg);
+	color: var(--text-muted);
+}
+
+.app-navbar {
+	background: linear-gradient(95deg, var(--brand-primary-dark) 0%, var(--brand-primary) 60%, #0ca8b3 100%) !important;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.app-logo {
+	height: 26px;
+	width: auto;
+	vertical-align: middle;
+	filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.45));
+}
+
+.navbar .nav-link {
+	border-radius: 8px;
+	transition: background-color .18s ease, color .18s ease;
+}
+
+.navbar .nav-link:hover,
+.navbar .nav-link:focus {
+	background-color: rgba(255, 255, 255, 0.14);
+}
+
+.navbar .dropdown-menu {
+	border: 0;
+	border-radius: 12px;
+	box-shadow: 0 8px 28px rgba(16, 55, 60, 0.16);
+	padding: .45rem;
+}
+
+.navbar .dropdown-item {
+	border-radius: 8px;
+	font-size: .92rem;
+}
+
+.navbar .dropdown-item.active,
+.navbar .dropdown-item:active,
+.list-group-item.active {
+	background-color: var(--brand-primary) !important;
+	border-color: var(--brand-primary) !important;
+	color: #fff !important;
+}
+
+.btn-primary,
+.btn-success {
+	background-color: var(--brand-primary) !important;
+	border-color: var(--brand-primary) !important;
+}
+
+.btn-primary:hover,
+.btn-success:hover {
+	background-color: var(--brand-primary-dark) !important;
+	border-color: var(--brand-primary-dark) !important;
+}
+
+.btn-outline-primary {
+	color: var(--brand-primary) !important;
+	border-color: var(--brand-primary) !important;
+}
+
+.btn-outline-primary:hover {
+	background-color: var(--brand-primary) !important;
+	border-color: var(--brand-primary) !important;
+	color: #fff !important;
+}
+
+.table thead th,
+th {
+	background: linear-gradient(180deg, #0ca8b3 0%, var(--brand-primary) 100%) !important;
+	color: #fff !important;
+	border-color: #b6dfe2 !important;
+	letter-spacing: .03em;
+	text-transform: uppercase;
+}
+
+.container,
+.container-fluid {
+	color: var(--text-strong);
+}
+
+.card,
+.offcanvas,
+.accordion-item {
+	border: 1px solid #d7e7e9;
+	border-radius: 12px;
+	box-shadow: 0 5px 16px rgba(23, 53, 58, 0.06);
+}
+
+.offcanvas-header {
+	background: linear-gradient(90deg, var(--brand-primary-dark), var(--brand-primary));
+	color: #fff;
+}
+
+@media (max-width: 991.98px) {
+	.app-logo {
+		height: 22px;
+	}
+}
