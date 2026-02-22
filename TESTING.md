@@ -76,6 +76,14 @@ Kurze manuelle Testmatrix für Lieferstatus/Dachser/Referenz-Extraktion plus Job
    - `invoice.from_so_id = <AB-ID>` vorhanden.
    - `sales_orders.so_stage` auf `Closed - Shipped and Invoiced`.
 
+### 8) System-Job Mail Poller sichtbar
+
+1. `middleware/jobs.php` öffnen.
+2. Erwartung:
+   - Job `Mail Poller` vorhanden (`system:mail_poll_5m`).
+   - Schritt `Mailbox pollen` mit `step_type = run_mail_poller` sichtbar.
+   - Intervall: 5 Minuten.
+
 ## Technische Checks
 
 ```bash

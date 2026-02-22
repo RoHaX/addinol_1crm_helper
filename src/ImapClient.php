@@ -48,14 +48,21 @@ class ImapClient
 	public function fetchHeaders($uid)
 	{
 		$this->ensureConnected();
-		$raw = imap_fetchheader($this->stream, $uid, FT_UID);
-		$header = imap_rfc822_parse_headers($raw);
+		$raw = @imap_fetchheader($this->stream, $uid, FT_UID);
+		if (!is_string($raw)) {
+			$raw = '';
+		}
+		$header = @imap_rfc822_parse_headers($raw);
+		if (!is_object($header)) {
+			$header = (object)[];
+		}
+		$fallback = $this->parseHeaderFallback($raw);
 		return [
 			'raw' => $raw,
-			'subject' => isset($header->subject) ? imap_utf8($header->subject) : null,
-			'from' => isset($header->from) ? $this->formatAddress($header->from) : null,
-			'message_id' => $header->message_id ?? null,
-			'date' => $header->date ?? null,
+			'subject' => isset($header->subject) ? imap_utf8($header->subject) : ($fallback['subject'] ?? null),
+			'from' => isset($header->from) ? $this->formatAddress($header->from) : ($fallback['from'] ?? null),
+			'message_id' => $header->message_id ?? ($fallback['message_id'] ?? null),
+			'date' => $header->date ?? ($fallback['date'] ?? null),
 		];
 	}
 
@@ -202,5 +209,31 @@ class ImapClient
 		if (!$this->stream) {
 			throw new RuntimeException('IMAP not connected');
 		}
+	}
+
+	private function parseHeaderFallback($raw)
+	{
+		$out = [
+			'subject' => null,
+			'from' => null,
+			'message_id' => null,
+			'date' => null,
+		];
+		if (!is_string($raw) || $raw === '') {
+			return $out;
+		}
+		if (preg_match('/^Subject:\s*(.+)$/mi', $raw, $m)) {
+			$out['subject'] = trim($m[1]);
+		}
+		if (preg_match('/^From:\s*(.+)$/mi', $raw, $m)) {
+			$out['from'] = trim($m[1]);
+		}
+		if (preg_match('/^Message-ID:\s*(.+)$/mi', $raw, $m)) {
+			$out['message_id'] = trim($m[1]);
+		}
+		if (preg_match('/^Date:\s*(.+)$/mi', $raw, $m)) {
+			$out['date'] = trim($m[1]);
+		}
+		return $out;
 	}
 }

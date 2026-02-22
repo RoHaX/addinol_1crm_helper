@@ -78,6 +78,9 @@ class JobService
 				return false;
 			}
 		}
+		if (!self::ensureSystemJobs($db)) {
+			return false;
+		}
 		return true;
 	}
 
@@ -281,6 +284,117 @@ class JobService
 		return ['ok' => true, 'job_id' => $jobId];
 	}
 
+	public static function updateJob(?mysqli $db, int $jobId, array $job, array $steps): array
+	{
+		if (!$db) {
+			return ['ok' => false, 'reason' => 'db_missing'];
+		}
+		if (!self::ensureTables($db)) {
+			return ['ok' => false, 'reason' => 'ensure_tables_failed'];
+		}
+		if ($jobId <= 0) {
+			return ['ok' => false, 'reason' => 'invalid_job_id'];
+		}
+
+		$current = self::getJobById($db, $jobId);
+		if (!$current) {
+			return ['ok' => false, 'reason' => 'job_not_found'];
+		}
+		if (strpos((string)($current['job_key'] ?? ''), 'system:') === 0) {
+			return ['ok' => false, 'reason' => 'system_job_readonly'];
+		}
+
+		$title = trim((string)($job['title'] ?? ''));
+		if ($title === '') {
+			return ['ok' => false, 'reason' => 'missing_title'];
+		}
+
+		$jobType = trim((string)($job['job_type'] ?? 'generic'));
+		$description = trim((string)($job['description'] ?? ''));
+		$relationType = trim((string)($job['relation_type'] ?? 'none'));
+		$allowedRelation = ['none', 'sales_order', 'purchase_order', 'account', 'customer', 'other'];
+		if (!in_array($relationType, $allowedRelation, true)) {
+			$relationType = 'none';
+		}
+		$relationId = trim((string)($job['relation_id'] ?? ''));
+		if ($relationId === '') {
+			$relationId = null;
+		}
+		$accountId = trim((string)($job['account_id'] ?? ''));
+		if ($accountId === '') {
+			$accountId = null;
+		}
+		$payloadJson = trim((string)($job['payload_json'] ?? ''));
+		if ($payloadJson === '') {
+			$payloadJson = null;
+		}
+
+		$scheduleType = trim((string)($job['schedule_type'] ?? 'once'));
+		$allowedSchedule = ['once', 'interval_minutes', 'daily_time'];
+		if (!in_array($scheduleType, $allowedSchedule, true)) {
+			$scheduleType = 'once';
+		}
+
+		$runMode = trim((string)($job['run_mode'] ?? 'manual'));
+		$runMode = $runMode === 'auto' ? 'auto' : 'manual';
+
+		$runAt = trim((string)($job['run_at'] ?? ''));
+		$runAtDb = self::normalizeDateTime($runAt);
+		$intervalMinutes = (int)($job['interval_minutes'] ?? 0);
+		if ($intervalMinutes < 1) {
+			$intervalMinutes = null;
+		}
+		$dailyTime = trim((string)($job['daily_time'] ?? ''));
+		if ($dailyTime === '' || !preg_match('/^\d{2}:\d{2}(:\d{2})?$/', $dailyTime)) {
+			$dailyTime = null;
+		}
+		$timezone = trim((string)($job['timezone'] ?? 'Europe/Vienna'));
+		if ($timezone === '') {
+			$timezone = 'Europe/Vienna';
+		}
+
+		$nextRunAt = self::computeNextRunAt([
+			'schedule_type' => $scheduleType,
+			'run_mode' => $runMode,
+			'run_at' => $runAtDb,
+			'interval_minutes' => $intervalMinutes,
+			'daily_time' => $dailyTime,
+		]);
+
+		$update = $db->prepare('UPDATE mw_jobs
+			SET title = ?, job_type = ?, description = ?, relation_type = ?, relation_id = ?, account_id = ?, payload_json = ?,
+				schedule_type = ?, run_mode = ?, run_at = ?, next_run_at = ?, interval_minutes = ?, daily_time = ?, timezone = ?, updated_at = NOW()
+			WHERE id = ?
+			LIMIT 1');
+		if (!$update) {
+			return ['ok' => false, 'reason' => 'update_prepare_failed'];
+		}
+		$update->bind_param(
+			'sssssssssssissi',
+			$title,
+			$jobType,
+			$description,
+			$relationType,
+			$relationId,
+			$accountId,
+			$payloadJson,
+			$scheduleType,
+			$runMode,
+			$runAtDb,
+			$nextRunAt,
+			$intervalMinutes,
+			$dailyTime,
+			$timezone,
+			$jobId
+		);
+		if (!$update->execute()) {
+			return ['ok' => false, 'reason' => 'update_failed'];
+		}
+
+		self::replaceSteps($db, $jobId, $steps);
+		return ['ok' => true, 'job_id' => $jobId];
+	}
+
 	public static function replaceSteps(?mysqli $db, int $jobId, array $steps): void
 	{
 		if (!$db || $jobId <= 0) {
@@ -377,11 +491,32 @@ class JobService
 						$status = 'error';
 						break;
 					}
-				} else {
-					$messages[] = $stepTitle . ': als erledigt markiert.';
+					} elseif ($stepType === 'run_mail_poller') {
+						$exec = self::executeMailPoller($payload);
+						$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
+						if (empty($exec['ok'])) {
+							$status = 'error';
+							break;
+						}
+					} elseif ($stepType === 'run_lagerheini') {
+						$exec = self::executeLagerheini($payload);
+						$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
+						if (empty($exec['ok'])) {
+							$status = 'error';
+							break;
+						}
+					} elseif ($stepType === 'send_crm_test_email') {
+						$exec = self::executeCrmTestEmail($db, $job, $payload);
+						$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
+						if (empty($exec['ok'])) {
+							$status = 'error';
+							break;
+						}
+					} else {
+						$messages[] = $stepTitle . ': als erledigt markiert.';
+					}
 				}
 			}
-		}
 
 		$resultMessage = implode("\n", $messages);
 		$resultJson = json_encode(['steps' => $steps, 'messages' => $messages], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -778,6 +913,401 @@ class JobService
 			'invoice_id' => $invoiceId,
 			'invoice_number' => $invoicePrefix . $invoiceNumber,
 		];
+	}
+
+	private static function executeMailPoller(array $payload): array
+	{
+		$script = trim((string)($payload['script'] ?? ''));
+		if ($script === '') {
+			$script = 'bin/poll.php';
+		}
+		return self::executePhpScript($script, $payload, 'Poll');
+	}
+
+	private static function executeLagerheini(array $payload): array
+	{
+		$script = trim((string)($payload['script'] ?? ''));
+		if ($script === '') {
+			$script = 'lagerheini.php';
+		}
+		return self::executePhpScript($script, $payload, 'Lagerheini');
+	}
+
+	private static function executePhpScript(string $scriptRelative, array $payload, string $label): array
+	{
+		$script = realpath(__DIR__ . '/../' . ltrim($scriptRelative, '/'));
+		if (!$script || !is_file($script)) {
+			return ['ok' => false, 'message' => $scriptRelative . ' nicht gefunden'];
+		}
+
+		$phpBin = trim((string)($payload['php_bin'] ?? ''));
+		if ($phpBin === '' || !is_file($phpBin) || !is_executable($phpBin)) {
+			$phpBin = self::resolvePhpBinary();
+		}
+		$cmd = escapeshellarg($phpBin) . ' ' . escapeshellarg($script) . ' 2>&1';
+		$out = [];
+		$exit = 1;
+		@exec($cmd, $out, $exit);
+
+		$maxLines = 8;
+		$tail = array_slice($out, -$maxLines);
+		$tailText = trim(implode(' | ', $tail));
+		if ($tailText === '') {
+			$tailText = 'ohne Ausgabe';
+		}
+
+		if ($exit !== 0) {
+			return ['ok' => false, 'message' => $label . ' fehlgeschlagen (exit ' . $exit . '): ' . $tailText];
+		}
+		return ['ok' => true, 'message' => $label . ' erfolgreich: ' . $tailText];
+	}
+
+	private static function executeCrmTestEmail(mysqli $db, array $job, array $payload): array
+	{
+		$accountId = trim((string)($payload['account_id'] ?? ''));
+		if ($accountId === '') {
+			$accountId = trim((string)($job['account_id'] ?? ''));
+		}
+		if ($accountId === '') {
+			return ['ok' => false, 'message' => 'account_id fehlt'];
+		}
+
+		$accountStmt = $db->prepare('SELECT id, name, assigned_user_id FROM accounts WHERE id = ? AND deleted = 0 LIMIT 1');
+		if (!$accountStmt) {
+			return ['ok' => false, 'message' => 'Account-Query prepare fehlgeschlagen'];
+		}
+		$accountStmt->bind_param('s', $accountId);
+		$accountStmt->execute();
+		$accountRes = $accountStmt->get_result();
+		$account = $accountRes->fetch_assoc();
+		if (!$account) {
+			return ['ok' => false, 'message' => 'Account nicht gefunden: ' . $accountId];
+		}
+
+		$assignedUserId = trim((string)($account['assigned_user_id'] ?? ''));
+		if ($assignedUserId === '') {
+			$assignedUserId = '7ad50b69-112c-4aa4-8470-56682d8c9ef3';
+		}
+
+		$toAddr = trim((string)($payload['to_addr'] ?? ''));
+		if ($toAddr === '') {
+			$toAddr = self::resolveContactEmailForAccount($db, $accountId);
+		}
+		if ($toAddr === '') {
+			return ['ok' => false, 'message' => 'Kein Empfänger für Account gefunden'];
+		}
+
+		$fromAddr = trim((string)($payload['from_addr'] ?? 'h.egger@addinol-lubeoil.at'));
+		$subject = trim((string)($payload['subject'] ?? 'JOB TEST-E-Mail'));
+		if ($subject === '') {
+			$subject = 'JOB TEST-E-Mail';
+		}
+		$bodyText = trim((string)($payload['body_text'] ?? 'JOB TEST-E-Mail'));
+		if ($bodyText === '') {
+			$bodyText = 'JOB TEST-E-Mail';
+		}
+		$bodyHtml = trim((string)($payload['body_html'] ?? '<p>JOB TEST-E-Mail</p>'));
+		if ($bodyHtml === '') {
+			$bodyHtml = '<p>JOB TEST-E-Mail</p>';
+		}
+
+		$folderId = self::resolveSentFolderId($db, $assignedUserId);
+		if ($folderId === '') {
+			return ['ok' => false, 'message' => 'Gesendet-Ordner nicht gefunden'];
+		}
+
+		$sendResult = self::sendEmailNow($toAddr, $subject, $bodyText, $bodyHtml, $fromAddr);
+		$mailSent = !empty($sendResult['ok']);
+		$mailError = trim((string)($sendResult['error'] ?? ''));
+		$emailStatus = $mailSent ? 'sent' : 'send_error';
+		$sendErrorFlag = $mailSent ? 0 : 1;
+
+		$emailId = self::generateGuid();
+		$now = date('Y-m-d H:i:s');
+
+		$db->begin_transaction();
+		try {
+			$insertEmail = $db->prepare('INSERT INTO emails
+				(id, date_entered, date_modified, assigned_user_id, modified_user_id, created_by, deleted, send_error, replace_fields, mailbox_id, message_id, thread_id, in_reply_to, replied, intent, name, date_start, parent_type, parent_id, contact_id, account_id, from_addr, from_name, reply_to_addr, reply_to_name, to_addrs, cc_addrs, bcc_addrs, to_addrs_ids, to_addrs_names, to_addrs_emails, cc_addrs_ids, cc_addrs_names, cc_addrs_emails, bcc_addrs_ids, bcc_addrs_names, bcc_addrs_emails, type, status, folder, isread, case_status)
+				VALUES (?, ?, ?, ?, ?, ?, 0, ?, 0, NULL, NULL, NULL, NULL, 0, "pick", ?, ?, "Accounts", ?, NULL, ?, ?, NULL, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, "out", ?, ?, 1, "Pending")');
+			if (!$insertEmail) {
+				throw new RuntimeException('emails insert prepare failed');
+			}
+			$insertEmail->bind_param(
+				'ssssssissssssss',
+				$emailId,
+				$now,
+				$now,
+				$assignedUserId,
+				$assignedUserId,
+				$assignedUserId,
+				$sendErrorFlag,
+				$subject,
+				$now,
+				$accountId,
+				$accountId,
+				$fromAddr,
+				$toAddr,
+				$emailStatus,
+				$folderId
+			);
+			if (!$insertEmail->execute()) {
+				throw new RuntimeException('emails insert failed');
+			}
+
+			$insertBody = $db->prepare('INSERT INTO emails_bodies (deleted, email_id, description, description_html, upgraded) VALUES (0, ?, ?, ?, 1)');
+			if (!$insertBody) {
+				throw new RuntimeException('emails_bodies insert prepare failed');
+			}
+			$insertBody->bind_param('sss', $emailId, $bodyText, $bodyHtml);
+			if (!$insertBody->execute()) {
+				throw new RuntimeException('emails_bodies insert failed');
+			}
+
+			$insertAcc = $db->prepare('INSERT INTO emails_accounts (date_modified, deleted, email_id, account_id) VALUES (?, 0, ?, ?)');
+			if (!$insertAcc) {
+				throw new RuntimeException('emails_accounts insert prepare failed');
+			}
+			$insertAcc->bind_param('sss', $now, $emailId, $accountId);
+			if (!$insertAcc->execute()) {
+				throw new RuntimeException('emails_accounts insert failed');
+			}
+
+			$db->commit();
+		} catch (Throwable $e) {
+			$db->rollback();
+			return ['ok' => false, 'message' => 'CRM Test-E-Mail fehlgeschlagen: ' . $e->getMessage()];
+		}
+
+		if (!$mailSent) {
+			return [
+				'ok' => false,
+				'message' => 'CRM E-Mail angelegt, Versand fehlgeschlagen: ' . $emailId . ($mailError !== '' ? ' (' . $mailError . ')' : ''),
+				'email_id' => $emailId,
+			];
+		}
+
+		return ['ok' => true, 'message' => 'CRM Test-E-Mail angelegt und versendet: ' . $emailId, 'email_id' => $emailId];
+	}
+
+	private static function sendEmailNow(string $toAddr, string $subject, string $bodyText, string $bodyHtml, string $fromAddr): array
+	{
+		$toAddr = trim($toAddr);
+		if ($toAddr === '') {
+			return ['ok' => false, 'error' => 'missing_to'];
+		}
+		$fromAddr = trim($fromAddr);
+		if ($fromAddr === '') {
+			$fromAddr = 'noreply@addinol-lubeoil.at';
+		}
+
+		$subjectEnc = '=?UTF-8?B?' . base64_encode($subject) . '?=';
+		$headers = [];
+		$headers[] = 'MIME-Version: 1.0';
+		$headers[] = 'Content-Type: text/html; charset=UTF-8';
+		$headers[] = 'From: ' . $fromAddr;
+		$headers[] = 'Reply-To: ' . $fromAddr;
+		$headers[] = 'X-Mailer: 1CRM-Helper-JobService';
+		$message = $bodyHtml !== '' ? $bodyHtml : nl2br(htmlspecialchars($bodyText, ENT_QUOTES));
+
+		$ok = @mail($toAddr, $subjectEnc, $message, implode("\r\n", $headers));
+		if (!$ok) {
+			return ['ok' => false, 'error' => 'mail_returned_false'];
+		}
+		return ['ok' => true];
+	}
+
+	private static function resolveContactEmailForAccount(mysqli $db, string $accountId): string
+	{
+		$stmt = $db->prepare('SELECT email1, email2 FROM contacts WHERE deleted = 0 AND primary_account_id = ? AND (email1 IS NOT NULL OR email2 IS NOT NULL) ORDER BY date_modified DESC LIMIT 1');
+		if (!$stmt) {
+			return '';
+		}
+		$stmt->bind_param('s', $accountId);
+		$stmt->execute();
+		$res = $stmt->get_result();
+		if ($row = $res->fetch_assoc()) {
+			$email1 = trim((string)($row['email1'] ?? ''));
+			if ($email1 !== '') {
+				return $email1;
+			}
+			$email2 = trim((string)($row['email2'] ?? ''));
+			if ($email2 !== '') {
+				return $email2;
+			}
+		}
+		return '';
+	}
+
+	private static function resolveSentFolderId(mysqli $db, string $userId): string
+	{
+		$stmt = $db->prepare('SELECT id FROM emails_folders WHERE deleted = 0 AND name = "Gesendet" AND user_id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('s', $userId);
+			$stmt->execute();
+			$res = $stmt->get_result();
+			if ($row = $res->fetch_assoc()) {
+				return (string)$row['id'];
+			}
+		}
+
+		$stmt2 = $db->prepare('SELECT id FROM emails_folders WHERE deleted = 0 AND name = "Gesendet" AND reserved = 2 ORDER BY user_id DESC LIMIT 1');
+		if ($stmt2) {
+			$stmt2->execute();
+			$res2 = $stmt2->get_result();
+			if ($row2 = $res2->fetch_assoc()) {
+				return (string)$row2['id'];
+			}
+		}
+		return '';
+	}
+
+	private static function resolvePhpBinary(): string
+	{
+		$forced = trim((string)(getenv('EXTRACT_PHP_BIN') ?: ''));
+		if ($forced !== '') {
+			return $forced;
+		}
+		$candidates = [
+			'/opt/plesk/php/8.3/bin/php',
+			'/opt/plesk/php/8.2/bin/php',
+			'/opt/plesk/php/8.1/bin/php',
+			'/usr/bin/php',
+		];
+		foreach ($candidates as $bin) {
+			if (is_file($bin) && is_executable($bin)) {
+				return $bin;
+			}
+		}
+		return '/opt/plesk/php/8.3/bin/php';
+	}
+
+	private static function ensureSystemJobs(mysqli $db): bool
+	{
+		$jobKey = 'system:mail_poll_5m';
+		$jobId = 0;
+
+		$sel = $db->prepare('SELECT id FROM mw_jobs WHERE job_key = ? LIMIT 1');
+		if (!$sel) {
+			return false;
+		}
+		$sel->bind_param('s', $jobKey);
+		if (!$sel->execute()) {
+			return false;
+		}
+		$res = $sel->get_result();
+		if ($row = $res->fetch_assoc()) {
+			$jobId = (int)($row['id'] ?? 0);
+		}
+
+		if ($jobId <= 0) {
+			$payloadJson = json_encode(['source' => 'system'], JSON_UNESCAPED_SLASHES);
+			$ins = $db->prepare('INSERT INTO mw_jobs
+				(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, interval_minutes, daily_time, timezone, status, created_at, updated_at)
+				VALUES (?, "Mail Poller", "system", "Mailbox pollen über bin/poll.php", "none", NULL, NULL, ?, "interval_minutes", "auto", NOW(), NOW(), 5, NULL, "Europe/Vienna", "active", NOW(), NOW())');
+			if (!$ins) {
+				return false;
+			}
+			$ins->bind_param('ss', $jobKey, $payloadJson);
+			if (!$ins->execute()) {
+				return false;
+			}
+			$jobId = (int)$db->insert_id;
+		}
+
+		$stepSel = $db->prepare('SELECT id FROM mw_job_steps WHERE job_id = ? AND step_type = "run_mail_poller" LIMIT 1');
+		if (!$stepSel) {
+			return false;
+		}
+		$stepSel->bind_param('i', $jobId);
+		if (!$stepSel->execute()) {
+			return false;
+		}
+		$stepRes = $stepSel->get_result();
+		if (!$stepRes->fetch_assoc()) {
+			$stepPayload = json_encode(['script' => 'bin/poll.php'], JSON_UNESCAPED_SLASHES);
+			$stepIns = $db->prepare('INSERT INTO mw_job_steps
+				(job_id, step_order, step_title, step_type, step_payload_json, due_at, is_required, created_at, updated_at)
+				VALUES (?, 1, "Mailbox pollen", "run_mail_poller", ?, NULL, 1, NOW(), NOW())');
+			if (!$stepIns) {
+				return false;
+			}
+			$stepIns->bind_param('is', $jobId, $stepPayload);
+			if (!$stepIns->execute()) {
+				return false;
+			}
+		}
+
+		$lagerKey = 'system:lagerheini_daily_0800';
+		$lagerJobId = 0;
+		$lagerSel = $db->prepare('SELECT id FROM mw_jobs WHERE job_key = ? LIMIT 1');
+		if (!$lagerSel) {
+			return false;
+		}
+		$lagerSel->bind_param('s', $lagerKey);
+		if (!$lagerSel->execute()) {
+			return false;
+		}
+		$lagerRes = $lagerSel->get_result();
+		if ($row = $lagerRes->fetch_assoc()) {
+			$lagerJobId = (int)($row['id'] ?? 0);
+		}
+
+		if ($lagerJobId <= 0) {
+			$php81 = '/opt/plesk/php/8.1/bin/php';
+			$payload = ['source' => 'system', 'script' => 'lagerheini.php'];
+			if (is_file($php81) && is_executable($php81)) {
+				$payload['php_bin'] = $php81;
+			}
+			$payloadJson = json_encode($payload, JSON_UNESCAPED_SLASHES);
+			$nextRunTs = strtotime(date('Y-m-d') . ' 08:00:00');
+			if ($nextRunTs !== false && $nextRunTs <= time()) {
+				$nextRunTs = strtotime('+1 day', $nextRunTs);
+			}
+			$nextRunAt = $nextRunTs !== false ? date('Y-m-d H:i:s', $nextRunTs) : date('Y-m-d 08:00:00', strtotime('+1 day'));
+
+			$ins = $db->prepare('INSERT INTO mw_jobs
+				(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, interval_minutes, daily_time, timezone, status, created_at, updated_at)
+				VALUES (?, "Lagerheini", "system", "Lagerheini täglich ausführen", "none", NULL, NULL, ?, "daily_time", "auto", NOW(), ?, NULL, "08:00:00", "Europe/Vienna", "active", NOW(), NOW())');
+			if (!$ins) {
+				return false;
+			}
+			$ins->bind_param('sss', $lagerKey, $payloadJson, $nextRunAt);
+			if (!$ins->execute()) {
+				return false;
+			}
+			$lagerJobId = (int)$db->insert_id;
+		}
+
+		$lagerStepSel = $db->prepare('SELECT id FROM mw_job_steps WHERE job_id = ? AND step_type = "run_lagerheini" LIMIT 1');
+		if (!$lagerStepSel) {
+			return false;
+		}
+		$lagerStepSel->bind_param('i', $lagerJobId);
+		if (!$lagerStepSel->execute()) {
+			return false;
+		}
+		$lagerStepRes = $lagerStepSel->get_result();
+		if (!$lagerStepRes->fetch_assoc()) {
+			$stepPayload = ['script' => 'lagerheini.php'];
+			$php81 = '/opt/plesk/php/8.1/bin/php';
+			if (is_file($php81) && is_executable($php81)) {
+				$stepPayload['php_bin'] = $php81;
+			}
+			$stepPayloadJson = json_encode($stepPayload, JSON_UNESCAPED_SLASHES);
+			$stepIns = $db->prepare('INSERT INTO mw_job_steps
+				(job_id, step_order, step_title, step_type, step_payload_json, due_at, is_required, created_at, updated_at)
+				VALUES (?, 1, "Lagerheini ausführen", "run_lagerheini", ?, NULL, 1, NOW(), NOW())');
+			if (!$stepIns) {
+				return false;
+			}
+			$stepIns->bind_param('is', $lagerJobId, $stepPayloadJson);
+			if (!$stepIns->execute()) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private static function generateGuid(): string

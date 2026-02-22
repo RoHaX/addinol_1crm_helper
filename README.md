@@ -125,6 +125,9 @@ Status-/Log-Dateien:
 - Spezial-Step:
   - `convert_ab_to_invoice`: wandelt AB (`sales_orders`) in Rechnung (`invoice`) um.
   - Idempotent: wenn bereits Rechnung zu `from_so_id` existiert, wird keine zweite erstellt.
+  - `run_mail_poller`: führt `bin/poll.php` aus.
+- System-Job:
+  - `Mail Poller` (`job_key = system:mail_poll_5m`) wird automatisch angelegt und läuft alle 5 Minuten über `jobs_worker`.
 
 Beispiel:
 
