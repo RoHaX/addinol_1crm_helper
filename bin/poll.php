@@ -35,6 +35,7 @@ $updatePending = $db->prepare('UPDATE mw_tracked_mail SET status = "pending_impo
 
 foreach ($mailboxes as $mailbox) {
 	try {
+		clear_imap_runtime_messages();
 		$imap = new ImapClient(MW_IMAP_HOST, MW_IMAP_PORT, MW_IMAP_USER, MW_IMAP_PASS, MW_IMAP_FLAGS);
 		$imap->connect($mailbox);
 		$uids = $imap->search('ALL');
@@ -116,14 +117,19 @@ foreach ($mailboxes as $mailbox) {
 				}
 			} catch (Throwable $e) {
 				$logger->error('poll mail error', ['mailbox' => $mailbox, 'uid' => $uid, 'error' => $e->getMessage()]);
+				clear_imap_runtime_messages();
 			}
 		}
 
 		$imap->disconnect();
+		clear_imap_runtime_messages();
 	} catch (Throwable $e) {
 		$logger->error('poll mailbox error', ['mailbox' => $mailbox, 'error' => $e->getMessage()]);
+		clear_imap_runtime_messages();
 	}
 }
+
+clear_imap_runtime_messages();
 
 function normalize_message_id($messageId)
 {
@@ -170,4 +176,16 @@ function find_crm_email_id($stmtExact, $stmtNormalized, $messageId)
 	}
 
 	return null;
+}
+
+function clear_imap_runtime_messages()
+{
+	$errs = @imap_errors();
+	if (is_array($errs)) {
+		// intentionally clear imap internal error stack to avoid noisy PHP shutdown notices
+	}
+	$alerts = @imap_alerts();
+	if (is_array($alerts)) {
+		// intentionally clear imap alert stack
+	}
 }

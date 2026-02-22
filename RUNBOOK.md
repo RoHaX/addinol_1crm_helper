@@ -39,6 +39,10 @@ Job-Worker mit Limit:
 JOB_LIMIT=50 /opt/plesk/php/8.3/bin/php bin/jobs_worker.php
 ```
 
+Hinweis:
+- Mail-Polling läuft als System-Job (`Mail Poller`) im `jobs_worker` (Intervall 5 Minuten).
+- Kein separater Poll-Cron nötig.
+
 ## Cron Vorschlag
 
 ```cron

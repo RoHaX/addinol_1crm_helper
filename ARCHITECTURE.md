@@ -51,6 +51,10 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
    - prüft vorhandene Rechnung via `invoice.from_so_id`,
    - erstellt bei Bedarf neue Rechnung inkl. Gruppen/Zeilen/Adjustments,
    - setzt AB-Status auf `Closed - Shipped and Invoiced`.
+6. System-Job `system:mail_poll_5m`:
+   - wird in `JobService::ensureTables()` automatisch angelegt,
+   - enthält Schritt `run_mail_poller` (`bin/poll.php`),
+   - läuft alle 5 Minuten über denselben `jobs_worker`.
 
 ## Data Model (Relevant)
 
