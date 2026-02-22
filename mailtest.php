@@ -1,90 +1,91 @@
 <?php
-// 1. Verbindung zur SMTP-Inbox (IMAP)
-$imapServer = '{mail.addinol-lubeoil.at:993/imap/ssl}INBOX'; // Ersetze durch deinen IMAP-Server
-$username = 'h.egger@addinol-lubeoil.at';
-$password = 'REDACTED_IMAP_PASSWORD';
 
+require_once __DIR__ . '/middleware/config.php';
 
-// Berechne das Datum der letzten 3 Tage
+function mt_env(string $key, string $default = ''): string
+{
+    $val = getenv($key);
+    if ($val === false || $val === '') {
+        return $default;
+    }
+    return (string)$val;
+}
+
+$imapMailbox = mt_env('MW_IMAP_MAILBOXES', 'INBOX');
+$imapServer = '{' . MW_IMAP_HOST . ':' . MW_IMAP_PORT . MW_IMAP_FLAGS . '}' . $imapMailbox;
+$username = MW_IMAP_USER;
+$password = MW_IMAP_PASS;
+
+if ($username === '' || $password === '') {
+    die('IMAP credentials missing (MW_IMAP_USER / MW_IMAP_PASS).');
+}
+
+$dbHost = mt_env('CRM_DB_HOST', 'localhost');
+$dbName = mt_env('CRM_DB_NAME', 'addinol_crm');
+$dbUser = mt_env('CRM_DB_USER', '');
+$dbPass = mt_env('CRM_DB_PASS', '');
+
+if ($dbUser === '' || $dbPass === '') {
+    die('DB credentials missing (CRM_DB_USER / CRM_DB_PASS).');
+}
+
 $threeDaysAgo = date('Y-m-d', strtotime('-3 days'));
 
-// Verbindung zum IMAP-Server herstellen
 $mailbox = imap_open($imapServer, $username, $password);
 if (!$mailbox) {
     die('Verbindung zum IMAP-Server fehlgeschlagen: ' . imap_last_error());
 }
 
 $missingEmails = [];
-
-// 2. Abrufen der E-Mails der letzten 3 Tage
 $emails = imap_search($mailbox, 'SINCE "' . $threeDaysAgo . '"');
 
 if ($emails) {
+    $dsn = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', $dbHost, $dbName);
+    $pdo = new PDO($dsn, $dbUser, $dbPass, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    ]);
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM emails WHERE message_id = :message_id');
+
     foreach ($emails as $emailNumber) {
-        // E-Mail-Kopfzeilen abrufen
         $header = imap_headerinfo($mailbox, $emailNumber);
 
-        if (isset($header->message_id)) {
-            $messageId = $header->message_id;
-        } else {
-            $messageId = "NULL"; // Setze auf null, wenn keine message_id vorhanden ist
-        }
-
+        $messageId = isset($header->message_id) ? $header->message_id : 'NULL';
         $from = $header->fromaddress;
-        // $subject = $header->subject;
         $subject = isset($header->subject) ? $header->subject : 'Kein Betreff';
-
         $date = $header->date;
 
         $decodedSubject = imap_mime_header_decode($subject);
-        if ($decodedSubject[0]) {
+        if (!empty($decodedSubject) && isset($decodedSubject[0])) {
             if (strpos($subject, '=?iso-8859-1?') !== false) {
-                $sub_dec = utf8_encode($decodedSubject[0]->text);
+                $subDec = utf8_encode($decodedSubject[0]->text);
             } else {
-                $sub_dec = $decodedSubject[0]->text;
-
+                $subDec = $decodedSubject[0]->text;
             }
         } else {
-            $sub_dec = $subject;
+            $subDec = $subject;
         }
-        
-        // Zeitzonenproblem beheben (optional, wenn du es brauchst)
-        $dateFormatted = date('Y-m-d H:i:s', strtotime($date)); // Konvertiere die Zeit ins Standardformat
 
-        // if ($dateFormatted == '2025-08-06 08:47:03') {
-        //     imap_delete($mailbox, $emailNumber);
-        //     echo "E-Mail mit Betreff '$header->subject' wurde markiert zum Löschen.<br>";
-        //     imap_expunge($mailbox);
-        //     echo "E-Mails wurden endgültig gelöscht.<br>";
-        // }
+        $dateFormatted = date('Y-m-d H:i:s', strtotime($date));
 
-        // 3. Überprüfen, ob die E-Mail bereits in der 1CRM-Datenbank ist
-        $pdo = new PDO('mysql:host=localhost;dbname=addinol_crm', 'addinol_usr', 'lwT1e99~'); // 1CRM-Datenbankverbindung
-        $stmt = $pdo->prepare("SELECT COUNT(*) FROM emails WHERE message_id = :message_id");
         $stmt->execute(['message_id' => $messageId]);
-        $count = $stmt->fetchColumn();
+        $count = (int)$stmt->fetchColumn();
 
-        // Falls die E-Mail nicht in der Datenbank vorhanden ist
-        if ($count == 0) {
-            // Ausgabe in einem strukturierten Format
-            echo "<div>";
-            echo "<h4>Neue E-Mail gefunden:</h4>";
-            echo "<p><strong>Datum:</strong> $dateFormatted</p>";
-            echo "<p><strong>Message-ID:</strong> $messageId</p>";
-            echo "<p><strong>Von:</strong> $from</p>";
-            echo "<p><strong>Betreff:</strong> $sub_dec</p>";
+        if ($count === 0) {
+            echo '<div>';
+            echo '<h4>Neue E-Mail gefunden:</h4>';
+            echo '<p><strong>Datum:</strong> ' . htmlspecialchars($dateFormatted, ENT_QUOTES, 'UTF-8') . '</p>';
+            echo '<p><strong>Message-ID:</strong> ' . htmlspecialchars($messageId, ENT_QUOTES, 'UTF-8') . '</p>';
+            echo '<p><strong>Von:</strong> ' . htmlspecialchars($from, ENT_QUOTES, 'UTF-8') . '</p>';
+            echo '<p><strong>Betreff:</strong> ' . htmlspecialchars($subDec, ENT_QUOTES, 'UTF-8') . '</p>';
+            echo '</div><br>';
 
-            // Optional: Füge die fehlende E-Mail zur Liste der fehlenden E-Mails hinzu
             $missingEmails[] = $messageId;
-            
-            echo "</div><br>";
         }
     }
-    echo "<h3>Gesamtzahl der fehlenden E-Mails: " . count($missingEmails) . "</h3>";
+
+    echo '<h3>Gesamtzahl der fehlenden E-Mails: ' . count($missingEmails) . '</h3>';
 } else {
-    echo "Keine E-Mails in den letzten 3 Tagen gefunden.";
+    echo 'Keine E-Mails in den letzten 3 Tagen gefunden.';
 }
 
-// 5. Verbindung zum IMAP-Server schließen
 imap_close($mailbox);
-?>

@@ -96,6 +96,25 @@ Plesk-Hinweis:
 
 ## Konfiguration
 
+IMAP/Jobs (ENV, keine Klartext-Secrets im Repo):
+- `MW_IMAP_HOST` (z. B. `server.haselsberger.at`)
+- `MW_IMAP_PORT` (z. B. `993`)
+- `MW_IMAP_USER`
+- `MW_IMAP_PASS`
+- `MW_IMAP_FLAGS` (z. B. `/imap/ssl`)
+- `MW_IMAP_MAILBOXES` (z. B. `INBOX`)
+- `MW_ACTION_KEY`
+
+Mailtest DB (ENV):
+- `CRM_DB_HOST` (default `localhost`)
+- `CRM_DB_NAME` (default `addinol_crm`)
+- `CRM_DB_USER`
+- `CRM_DB_PASS`
+
+PDF-Export API (ENV):
+- `CRM_API_USER`
+- `CRM_API_PASS`
+
 In `middleware/config.php` optional:
 - `MW_DACHSER_TRACKING_URL_BASE`
 - `MW_DACHSER_TRACKING_TIMEOUT`

@@ -1,12 +1,21 @@
 <?php
 
-define('MW_IMAP_HOST', 'server.haselsberger.at');
-define('MW_IMAP_PORT', 993);
-define('MW_IMAP_USER', 'h.egger@addinol-lubeoil.at');
-define('MW_IMAP_PASS', 'REDACTED_IMAP_PASSWORD');
-define('MW_IMAP_FLAGS', '/imap/ssl');
-define('MW_IMAP_MAILBOXES', 'INBOX');
-define('MW_ACTION_KEY', 'REDACTED_ACTION_KEY');
+function mw_cfg_env(string $key, string $default = ''): string
+{
+	$val = getenv($key);
+	if ($val === false || $val === '') {
+		return $default;
+	}
+	return (string)$val;
+}
+
+define('MW_IMAP_HOST', mw_cfg_env('MW_IMAP_HOST', 'server.haselsberger.at'));
+define('MW_IMAP_PORT', (int)mw_cfg_env('MW_IMAP_PORT', '993'));
+define('MW_IMAP_USER', mw_cfg_env('MW_IMAP_USER', ''));
+define('MW_IMAP_PASS', mw_cfg_env('MW_IMAP_PASS', ''));
+define('MW_IMAP_FLAGS', mw_cfg_env('MW_IMAP_FLAGS', '/imap/ssl'));
+define('MW_IMAP_MAILBOXES', mw_cfg_env('MW_IMAP_MAILBOXES', 'INBOX'));
+define('MW_ACTION_KEY', mw_cfg_env('MW_ACTION_KEY', ''));
 
 // Optional Dachser shipment-status API config (used by middleware/dachser_status.php)
 define('MW_DACHSER_API_STATUS_URL', 'https://api-gateway.dachser.com');

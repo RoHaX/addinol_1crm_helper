@@ -30,8 +30,11 @@
 	
 	 
 function getFile($url, $pdfname) {
-	$username='Hermann';
-	$password='REDACTED_API_PASSWORD';
+	$username = getenv('CRM_API_USER') ?: '';
+	$password = getenv('CRM_API_PASS') ?: '';
+	if ($username === '' || $password === '') {
+		throw new Exception('Missing CRM_API_USER / CRM_API_PASS environment variables.');
+	}
 	//Initiate cURL.
 	$ch = curl_init($url);
 	 
