@@ -20,7 +20,9 @@ Kleine Sammlung interner Helfer-Skripte rund um 1CRM (Berichte, Exporte, Lager, 
 - `lagerheini.php` – Automatisierte Lagerbestell-Mail
 - `middleware/firmen.php` – Firmenliste + Detailansicht (inkl. Aktivitäten, E-Mail-Verlauf, Auf-einen-Blick)
 - `middleware/lieferstatus.php` – Addinol-Bestellungen, Dachser-Referenzcheck, Extraktions-Trigger
+- `middleware/jobs.php` – Job-/ToDo-Übersicht, manuelle Ausführung, Status, Run-Historie
 - `bin/extract_addinol_refs.php` – PDF-Extraktion (`BE...`/`AT...`) aus Addinol-Rechnungsanhängen
+- `bin/jobs_worker.php` – Ausführung geplanter Auto-Jobs
 
 ## Abhängigkeiten (lokal eingebunden)
 
@@ -80,6 +82,7 @@ php bin/worker.php
 - `Dachser`: Quick-Link zur Tracking-Suche mit `search=<AT...>` (nur sichtbar wenn AT vorhanden).
 - `Erneut extrahieren`: startet asynchronen Voll-/Teilscan im Hintergrund (kein Web-Timeout).
 - `API`: ruft `middleware/dachser_status.php` auf, parst Dachser-Seite serverseitig und speichert Ergebnisse.
+- Bei Statuswechsel auf `Zugestellt`: erstellt automatisch einen Job `Ware zugestellt` mit Schritt `AB in Rechnung umwandeln`.
 
 Gespeicherte Dachser-Felder in `mw_addinol_refs`:
 
@@ -107,6 +110,33 @@ Status-/Log-Dateien:
 
 - `logs/extract_addinol_refs.status.json`
 - `logs/extract_addinol_refs.log`
+
+### Jobs / ToDos
+
+- Seite: `middleware/jobs.php`
+- Tabellen: `mw_jobs`, `mw_job_steps`, `mw_job_runs`
+- Unterstützte Pläne:
+  - `once` (einmalig)
+  - `interval_minutes` (mehrmals täglich)
+  - `daily_time` (täglich fixe Uhrzeit)
+- Ausführungsarten:
+  - `manual`
+  - `auto` (über `bin/jobs_worker.php` + Cron)
+- Spezial-Step:
+  - `convert_ab_to_invoice`: wandelt AB (`sales_orders`) in Rechnung (`invoice`) um.
+  - Idempotent: wenn bereits Rechnung zu `from_so_id` existiert, wird keine zweite erstellt.
+
+Beispiel:
+
+```bash
+/opt/plesk/php/8.3/bin/php bin/jobs_worker.php
+```
+
+Cron:
+
+```cron
+*/1 * * * * /opt/plesk/php/8.3/bin/php /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/bin/jobs_worker.php >> /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/logs/jobs_worker.log 2>&1
+```
 
 ## Lokal testen
 

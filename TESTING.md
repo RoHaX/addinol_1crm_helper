@@ -2,11 +2,12 @@
 
 ## Ziel
 
-Kurze manuelle Testmatrix für Lieferstatus/Dachser/Referenz-Extraktion.
+Kurze manuelle Testmatrix für Lieferstatus/Dachser/Referenz-Extraktion plus Jobs/AB->Rechnung.
 
 ## Voraussetzungen
 
 - Zugriff auf `middleware/lieferstatus.php`
+- Zugriff auf `middleware/jobs.php`
 - DB enthält `mw_addinol_refs` mit Addinol-Fällen
 - PHP 8.3 verfügbar für Lint/CLI
 
@@ -56,12 +57,34 @@ Kurze manuelle Testmatrix für Lieferstatus/Dachser/Referenz-Extraktion.
   - `dachser_status` enthält nur Status (nicht `Via/Info/Sendung...`).
   - `Via` und `Info` getrennt gespeichert.
 
+### 6) Job-Erstellung bei `Zugestellt`
+
+1. Bei einer Lieferung mit Statuswechsel auf `Zugestellt` `API` ausführen.
+2. Erwartung:
+   - API-JSON enthält `job_created: true` (beim ersten Wechsel).
+   - In `mw_jobs` erscheint Job `Ware zugestellt`.
+   - Schritt `AB in Rechnung umwandeln` ist vorhanden (`mw_job_steps`).
+
+### 7) Job-Worker / AB->Rechnung
+
+1. `bin/jobs_worker.php` per CLI starten.
+2. Erwartung:
+   - Für offenen Fall wird Rechnung erstellt.
+   - Für bereits fakturierte AB wird idempotent gemeldet: `Rechnung existiert bereits`.
+3. Erwartung in DB:
+   - `mw_job_runs` enthält Eintrag mit `status = ok`.
+   - `invoice.from_so_id = <AB-ID>` vorhanden.
+   - `sales_orders.so_stage` auf `Closed - Shipped and Invoiced`.
+
 ## Technische Checks
 
 ```bash
 phpenv shell 8.3 && php -l middleware/lieferstatus.php
 phpenv shell 8.3 && php -l middleware/dachser_status.php
 phpenv shell 8.3 && php -l bin/extract_addinol_refs.php
+phpenv shell 8.3 && php -l middleware/jobs.php
+phpenv shell 8.3 && php -l src/JobService.php
+phpenv shell 8.3 && php -l bin/jobs_worker.php
 ```
 
 ## Optionaler DB-Check
@@ -70,5 +93,12 @@ phpenv shell 8.3 && php -l bin/extract_addinol_refs.php
 SELECT sales_order_id, at_order_no, dachser_status, dachser_status_ts, dachser_via, dachser_info, dachser_last_checked_at
 FROM mw_addinol_refs
 ORDER BY updated_at DESC
+LIMIT 20;
+```
+
+```sql
+SELECT id, title, run_mode, status, next_run_at, last_run_at, last_result
+FROM mw_jobs
+ORDER BY id DESC
 LIMIT 20;
 ```

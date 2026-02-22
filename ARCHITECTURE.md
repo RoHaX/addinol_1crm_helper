@@ -9,6 +9,7 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
 - UI:
   - `middleware/lieferstatus.php`
   - `middleware/mailboard.php`
+  - `middleware/jobs.php`
 - Endpoints:
   - `middleware/dachser_status.php` (serverseitiges Dachser-Parsing)
   - `middleware/action.php` (Action-Queue enqueue)
@@ -17,9 +18,11 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
   - `bin/poll.php` (IMAP einlesen/klassifizieren/importieren)
   - `bin/worker.php` (Queue-Worker)
   - `bin/extract_addinol_refs.php` (BE/AT aus PDF extrahieren)
+  - `bin/jobs_worker.php` (Auto-Job-Worker)
 - Shared:
   - `db.inc.php` (DB-Verbindung)
   - `src/MwLogger.php` (JSON-Line Logging)
+  - `src/JobService.php` (Job-Engine inkl. AB->Rechnung-Handler)
   - `middleware/config.php` (optionale Middleware-Konfiguration)
 
 ## Data Flow: Lieferstatus / Dachser
@@ -34,8 +37,20 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
    - folgt ggf. JS/meta-refresh-Continue-Link,
    - parst `extracted_status`, `status_timestamp`, `via`, `info`,
    - speichert Ergebnis in `mw_addinol_refs`,
+   - bei Statuswechsel auf `Zugestellt`: erzeugt idempotent einen Job (`Ware zugestellt`),
    - liefert JSON an UI zurück.
 5. `middleware/lieferstatus.php` zeigt gespeicherte Dachser-Werte in der Tabelle.
+
+## Data Flow: Jobs / AB->Rechnung
+
+1. Jobs werden in `mw_jobs` angelegt (UI oder Event, z. B. Dachser `Zugestellt`).
+2. Schritte liegen in `mw_job_steps`.
+3. `bin/jobs_worker.php` zieht fällige Jobs (`active`, `auto`, `next_run_at <= NOW()`).
+4. `JobService::runJobNow()` führt Schritte aus und schreibt Ergebnis in `mw_job_runs`.
+5. Step `convert_ab_to_invoice`:
+   - prüft vorhandene Rechnung via `invoice.from_so_id`,
+   - erstellt bei Bedarf neue Rechnung inkl. Gruppen/Zeilen/Adjustments,
+   - setzt AB-Status auf `Closed - Shipped and Invoiced`.
 
 ## Data Model (Relevant)
 
@@ -50,6 +65,11 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
 - `dachser_last_checked_at`
 - `note_id`, `email_id`, `source_filename`
 - `extracted_at`, `updated_at`
+
+`mw_jobs` / `mw_job_steps` / `mw_job_runs`:
+- Allgemeine Job-/ToDo-Engine (manuell + automatisch)
+- Schrittbasierte Ausführung
+- Laufhistorie mit Status/Ergebnis
 
 ## Logging
 
