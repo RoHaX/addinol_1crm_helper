@@ -375,7 +375,6 @@
 		<table id="deliveryTable" class="table table-striped table-sm align-middle">
 			<thead>
 				<tr>
-					<th>Lieferant</th>
 					<th>Bestellung</th>
 					<th>Auftrag</th>
 					<th>Referenz</th>
@@ -392,6 +391,8 @@
 					<?php
 						$orderNo = trim((string)($row['prefix'] ?? '') . (string)($row['po_number'] ?? ''));
 						$salesOrderNo = trim((string)($row['sales_prefix'] ?? '') . (string)($row['so_number'] ?? ''));
+						$purchaseOrderUrl = 'https://addinol-lubeoil.at/crm/?module=PurchaseOrders&action=DetailView&record=' . urlencode((string)($row['id'] ?? ''));
+						$salesOrderUrl = 'https://addinol-lubeoil.at/crm/?module=SalesOrders&action=DetailView&record=' . urlencode((string)($row['sales_order_id'] ?? ''));
 						$reference = trim((string)($row['at_order_no'] ?? ''));
 						$beOrderNo = trim((string)($row['be_order_no'] ?? ''));
 						$copyValue = $reference !== '' ? $reference : ($beOrderNo !== '' ? $beOrderNo : $orderNo);
@@ -407,26 +408,21 @@
 							$dachserStatusTsLabel = date('d.m.Y H:i', $ts);
 						}
 					?>
-					<tr>
-						<td>
-							<div><?php echo htmlspecialchars($row['account_name'] ?? ''); ?></div>
-							<div class="text-muted small"><?php echo htmlspecialchars($row['ticker_symbol'] ?? ''); ?></div>
-						</td>
-						<td>
-							<div class="fw-semibold"><?php echo htmlspecialchars($orderNo); ?></div>
-							<div class="text-muted small"><?php echo htmlspecialchars($row['name'] ?? ''); ?></div>
-						</td>
-						<td>
-							<?php if ($salesOrderNo !== ''): ?>
-								<div class="fw-semibold"><?php echo htmlspecialchars($salesOrderNo); ?></div>
-								<div class="mt-1">
-									<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=SalesOrders&action=DetailView&record=' . urlencode($row['sales_order_id']); ?>">
-										<i class="fas fa-external-link-alt"></i> Öffnen
+						<tr>
+							<td>
+								<a class="btn btn-sm btn-outline-success fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($purchaseOrderUrl, ENT_QUOTES); ?>">
+									<?php echo htmlspecialchars($orderNo); ?>
+								</a>
+								<div class="text-muted small"><?php echo htmlspecialchars($row['name'] ?? ''); ?></div>
+							</td>
+							<td>
+								<?php if ($salesOrderNo !== '' && !empty($row['sales_order_id'])): ?>
+									<a class="btn btn-sm btn-outline-primary fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($salesOrderUrl, ENT_QUOTES); ?>">
+										<?php echo htmlspecialchars($salesOrderNo); ?>
 									</a>
-								</div>
-							<?php else: ?>
-								<span class="text-muted">-</span>
-							<?php endif; ?>
+								<?php else: ?>
+									<span class="text-muted">-</span>
+								<?php endif; ?>
 						</td>
 						<td>
 							<?php if ($reference !== ''): ?>
@@ -434,9 +430,12 @@
 							<?php else: ?>
 								<span class="badge text-bg-danger"><i class="fas fa-exclamation-triangle me-1"></i>AT fehlt</span>
 							<?php endif; ?>
-							<?php if ($beOrderNo !== ''): ?>
-								<div class="text-muted small mt-1">BE: <?php echo htmlspecialchars($beOrderNo); ?></div>
-							<?php endif; ?>
+								<?php if ($beOrderNo !== ''): ?>
+									<div class="text-muted small mt-1">
+										BE:
+										<span class="ms-1"><?php echo htmlspecialchars($beOrderNo); ?></span>
+									</div>
+								<?php endif; ?>
 						</td>
 						<td>
 							<?php if ($dachserStatus !== ''): ?>
@@ -484,9 +483,6 @@
 										<i class="fas fa-truck"></i> Dachser
 									</a>
 								<?php endif; ?>
-								<a class="btn btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=PurchaseOrders&action=DetailView&record=' . urlencode($row['id']); ?>">
-									<i class="fas fa-external-link-alt"></i> CRM
-								</a>
 							</div>
 						</td>
 					</tr>
@@ -534,7 +530,7 @@ document.addEventListener('DOMContentLoaded', () => {
 	}
 
 	$('#deliveryTable').DataTable({
-		order: [[5, 'desc']],
+		order: [[4, 'desc']],
 		pageLength: 50,
 		language: { url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/de-DE.json' }
 	});
@@ -622,9 +618,12 @@ document.addEventListener('DOMContentLoaded', () => {
 					if (apiStatusOutput) {
 						apiStatusOutput.textContent = JSON.stringify(json, null, 2);
 					}
+					if (json && json.job_created) {
+						showToast('ToDo-Job erstellt #' + json.job_id + ' (Ware zugestellt)');
+					}
 					if (!json || !json.ok) {
-					showToast('API-Antwort mit Fehler');
-				}
+						showToast('API-Antwort mit Fehler');
+					}
 			} catch (e) {
 				if (apiStatusOutput) {
 					apiStatusOutput.textContent = 'API-Aufruf fehlgeschlagen: ' + (e && e.message ? e.message : 'unknown');
