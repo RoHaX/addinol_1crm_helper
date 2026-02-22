@@ -257,36 +257,63 @@ function clear_imap_runtime_messages()
 function maybe_send_telegram_alert(MwLogger $logger, array $stats, string $summary): void
 {
 	$newTracked = (int)($stats['new_tracked'] ?? 0);
+	$mailErrors = (int)($stats['mail_errors'] ?? 0);
+	$mailboxErrors = (int)($stats['mailbox_errors'] ?? 0);
+	$hasErrors = ($mailErrors > 0 || $mailboxErrors > 0);
 	$botToken = trim((string)(getenv('TG_BOT_TOKEN') ?: getenv('TELEGRAM_BOT_TOKEN') ?: ''));
 	$chatId = trim((string)(getenv('TG_CHAT_ID') ?: getenv('TELEGRAM_CHAT_ID') ?: ''));
 	$minNew = (int)(getenv('TG_NOTIFY_MIN_NEW') ?: 1);
+	$notifyAlways = getenv('TG_NOTIFY_ALWAYS') === '1';
 	$cooldownSec = (int)(getenv('TG_NOTIFY_COOLDOWN_SEC') ?: 600);
 
-	if ($minNew < 1) {
-		$minNew = 1;
+	if ($minNew < 0) {
+		$minNew = 0;
 	}
 	if ($cooldownSec < 0) {
 		$cooldownSec = 0;
 	}
-	if ($newTracked < $minNew) {
+	if (!$notifyAlways && !$hasErrors && $newTracked < $minNew) {
 		return;
 	}
 	if ($botToken === '' || $chatId === '') {
-		$logger->info('telegram alert skipped (missing config)', ['new_tracked' => $newTracked]);
+		$logger->info('telegram alert skipped (missing config)', [
+			'new_tracked' => $newTracked,
+			'mail_errors' => $mailErrors,
+			'mailbox_errors' => $mailboxErrors,
+		]);
 		return;
 	}
 	if (!telegram_cooldown_ok($cooldownSec)) {
-		$logger->info('telegram alert skipped (cooldown)', ['new_tracked' => $newTracked, 'cooldown_sec' => $cooldownSec]);
+		$logger->info('telegram alert skipped (cooldown)', [
+			'new_tracked' => $newTracked,
+			'mail_errors' => $mailErrors,
+			'mailbox_errors' => $mailboxErrors,
+			'cooldown_sec' => $cooldownSec
+		]);
 		return;
 	}
 
-	$message = "Mail Poller\nNeue Mails: " . $newTracked . "\n" . $summary;
+	if ($hasErrors) {
+		$message = "Mail Poller ALARM\nMailbox-Fehler: " . $mailboxErrors . "\nMail-Fehler: " . $mailErrors . "\nNeue Mails: " . $newTracked . "\n" . $summary;
+	} else {
+		$message = "Mail Poller\nNeue Mails: " . $newTracked . "\n" . $summary;
+	}
 	$ok = send_telegram_message($botToken, $chatId, $message);
 	if ($ok) {
 		telegram_cooldown_touch();
-		$logger->info('telegram alert sent', ['new_tracked' => $newTracked]);
+		$logger->info('telegram alert sent', [
+			'new_tracked' => $newTracked,
+			'mail_errors' => $mailErrors,
+			'mailbox_errors' => $mailboxErrors,
+			'notify_always' => $notifyAlways,
+		]);
 	} else {
-		$logger->error('telegram alert failed', ['new_tracked' => $newTracked]);
+		$logger->error('telegram alert failed', [
+			'new_tracked' => $newTracked,
+			'mail_errors' => $mailErrors,
+			'mailbox_errors' => $mailboxErrors,
+			'notify_always' => $notifyAlways,
+		]);
 	}
 }
 
