@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../src/MwLogger.php';
+require_once __DIR__ . '/../src/JobService.php';
 if (file_exists(__DIR__ . '/config.php')) {
 	require_once __DIR__ . '/config.php';
 }
@@ -270,46 +271,78 @@ function persist_dachser_status(?mysqli $mysqli, string $purchaseOrderId, string
 	}
 
 	$savedBy = '';
-	$affected = 0;
+	$target = null;
 
 	if ($purchaseOrderId !== '') {
-		$sql = "UPDATE mw_addinol_refs
-			SET dachser_status = ?, dachser_status_ts = ?, dachser_via = ?, dachser_info = ?, dachser_last_checked_at = NOW(), updated_at = NOW()
+		$sel = $mysqli->prepare("SELECT id, sales_order_id, be_order_no, at_order_no, dachser_status
+			FROM mw_addinol_refs
 			WHERE sales_order_id = ?
-			LIMIT 1";
-		$stmt = $mysqli->prepare($sql);
-		if ($stmt) {
-			$stmt->bind_param('sssss', $status, $statusTs, $via, $info, $purchaseOrderId);
-			if ($stmt->execute()) {
-				$affected = (int)$stmt->affected_rows;
-				if ($affected > 0) {
-					$savedBy = 'sales_order_id';
-				}
+			ORDER BY id DESC
+			LIMIT 1");
+		if ($sel) {
+			$sel->bind_param('s', $purchaseOrderId);
+			$sel->execute();
+			$res = $sel->get_result();
+			if ($row = $res->fetch_assoc()) {
+				$target = $row;
+				$savedBy = 'sales_order_id';
 			}
-			$stmt->close();
+			$sel->close();
 		}
 	}
 
-	if ($affected === 0 && $reference !== '') {
-		$sql = "UPDATE mw_addinol_refs
-			SET dachser_status = ?, dachser_status_ts = ?, dachser_via = ?, dachser_info = ?, dachser_last_checked_at = NOW(), updated_at = NOW()
+	if (!$target && $reference !== '') {
+		$sel = $mysqli->prepare("SELECT id, sales_order_id, be_order_no, at_order_no, dachser_status
+			FROM mw_addinol_refs
 			WHERE at_order_no = ?
 			ORDER BY id DESC
-			LIMIT 1";
-		$stmt = $mysqli->prepare($sql);
-		if ($stmt) {
-			$stmt->bind_param('sssss', $status, $statusTs, $via, $info, $reference);
-			if ($stmt->execute()) {
-				$affected = (int)$stmt->affected_rows;
-				if ($affected > 0) {
-					$savedBy = 'at_order_no';
-				}
+			LIMIT 1");
+		if ($sel) {
+			$sel->bind_param('s', $reference);
+			$sel->execute();
+			$res = $sel->get_result();
+			if ($row = $res->fetch_assoc()) {
+				$target = $row;
+				$savedBy = 'at_order_no';
 			}
-			$stmt->close();
+			$sel->close();
 		}
 	}
 
-	return ['saved' => $affected > 0, 'saved_by' => $savedBy];
+	if (!$target || empty($target['id'])) {
+		return ['saved' => false, 'saved_by' => '', 'reason' => 'ref_not_found'];
+	}
+
+	$prevStatus = trim((string)($target['dachser_status'] ?? ''));
+	$newStatus = trim((string)$status);
+	$statusChanged = strtolower($prevStatus) !== strtolower($newStatus);
+
+	$upd = $mysqli->prepare("UPDATE mw_addinol_refs
+		SET dachser_status = ?, dachser_status_ts = ?, dachser_via = ?, dachser_info = ?, dachser_last_checked_at = NOW(), updated_at = NOW()
+		WHERE id = ?
+		LIMIT 1");
+	if (!$upd) {
+		return ['saved' => false, 'saved_by' => $savedBy, 'reason' => 'update_prepare_failed'];
+	}
+
+	$refRowId = (int)$target['id'];
+	$upd->bind_param('ssssi', $status, $statusTs, $via, $info, $refRowId);
+	$ok = $upd->execute();
+	$affected = (int)$upd->affected_rows;
+	$upd->close();
+
+	return [
+		'saved' => $ok,
+		'saved_by' => $savedBy,
+		'affected_rows' => $affected,
+		'ref_row_id' => $refRowId,
+		'previous_status' => $prevStatus,
+		'new_status' => $newStatus,
+		'status_changed' => $statusChanged,
+		'purchase_order_id' => (string)($target['sales_order_id'] ?? ''),
+		'be_order_no' => (string)($target['be_order_no'] ?? ''),
+		'at_order_no' => (string)($target['at_order_no'] ?? ''),
+	];
 }
 
 $logger = new MwLogger(__DIR__ . '/../logs');
@@ -367,6 +400,16 @@ $statusVia = isset($shipmentDetails['via']) ? (string)$shipmentDetails['via'] : 
 $statusInfo = isset($shipmentDetails['info']) ? (string)$shipmentDetails['info'] : '';
 $statusTsDb = parse_dachser_status_datetime($statusTimestamp);
 $saveResult = persist_dachser_status($mysqli ?? null, $purchaseOrderId, $reference, (string)$parsedStatus['best'], $statusTsDb, $statusVia, $statusInfo);
+$jobResult = ['ok' => true, 'created' => false, 'reason' => 'not_triggered'];
+if (!empty($saveResult['status_changed']) && JobService::isDeliveredStatus((string)$parsedStatus['best'])) {
+	$jobResult = JobService::createDeliveryTodoFromDachser($mysqli ?? null, [
+		'purchase_order_id' => $purchaseOrderId !== '' ? $purchaseOrderId : (string)($saveResult['purchase_order_id'] ?? ''),
+		'reference' => $reference,
+		'old_status' => (string)($saveResult['previous_status'] ?? ''),
+		'new_status' => (string)$parsedStatus['best'],
+		'status_changed' => !empty($saveResult['status_changed']),
+	]);
+}
 
 $logger->info('dachser_tracking_request', [
 	'reference' => $reference,
@@ -379,6 +422,11 @@ $logger->info('dachser_tracking_request', [
 	'extracted_status' => $parsedStatus['best'],
 	'saved' => $saveResult['saved'] ?? false,
 	'saved_by' => $saveResult['saved_by'] ?? '',
+	'status_changed' => $saveResult['status_changed'] ?? false,
+	'previous_status' => $saveResult['previous_status'] ?? '',
+	'job_created' => $jobResult['created'] ?? false,
+	'job_id' => $jobResult['job_id'] ?? null,
+	'job_result' => $jobResult,
 	'shipment_details_found' => !empty($shipmentDetails),
 ]);
 
@@ -398,5 +446,10 @@ echo json_encode([
 	'shipment_details' => $shipmentDetails,
 	'db_saved' => $saveResult['saved'] ?? false,
 	'db_saved_by' => $saveResult['saved_by'] ?? '',
+	'status_changed' => $saveResult['status_changed'] ?? false,
+	'previous_status' => $saveResult['previous_status'] ?? '',
+	'job_created' => $jobResult['created'] ?? false,
+	'job_id' => $jobResult['job_id'] ?? null,
+	'job_result' => $jobResult,
 	'raw_text' => substr($text, 0, 3000),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);

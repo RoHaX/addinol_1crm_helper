@@ -89,3 +89,62 @@ Indexes / constraints:
 - `uniq_note` unique (`note_id`).
 - `idx_be_order_no` (`be_order_no`).
 - `idx_at_order_no` (`at_order_no`).
+
+## Table: `mw_jobs`
+
+Generic Job/ToDo queue for middleware workflows (lieferbezogen, kundenbezogen, etc.).
+
+Fields:
+- `id` BIGINT PK.
+- `job_key` Optional unique idempotency key (used for event-driven jobs).
+- `title`, `job_type`, `description` Metadata.
+- `relation_type`, `relation_id`, `account_id` Optional CRM/entity references.
+- `payload_json` Flexible job context.
+- `schedule_type` ENUM(`once`,`interval_minutes`,`daily_time`).
+- `run_mode` ENUM(`manual`,`auto`).
+- `run_at`, `next_run_at`, `interval_minutes`, `daily_time`, `timezone` Scheduling.
+- `status` ENUM(`active`,`paused`,`done`,`error`,`archived`).
+- `last_run_at`, `last_result`, `last_result_message` Last execution state.
+- `created_at`, `updated_at`.
+
+Indexes:
+- `uniq_job_key` unique (`job_key`).
+- `idx_job_status_mode_next` (`status`,`run_mode`,`next_run_at`).
+- `idx_job_relation` (`relation_type`,`relation_id`).
+- `idx_job_type` (`job_type`).
+
+## Table: `mw_job_steps`
+
+Steps that belong to a job (e.g. `Angebot erstellen`, `AB in Rechnung umwandeln`).
+
+Fields:
+- `id` BIGINT PK.
+- `job_id` FK -> `mw_jobs.id`.
+- `step_order` Sequence within job.
+- `step_title`, `step_type`.
+- `step_payload_json` Optional structured data for step.
+- `due_at` Optional due datetime.
+- `is_required` Required flag.
+- `created_at`, `updated_at`.
+
+Indexes:
+- `uniq_job_step_order` unique (`job_id`,`step_order`).
+- `idx_job_steps_due` (`job_id`,`due_at`).
+
+## Table: `mw_job_runs`
+
+Execution log of manual/scheduled job runs.
+
+Fields:
+- `id` BIGINT PK.
+- `job_id` FK -> `mw_jobs.id`.
+- `trigger_type` ENUM(`manual`,`schedule`,`event`).
+- `started_at`, `finished_at`.
+- `status` ENUM(`running`,`ok`,`error`,`skipped`).
+- `result_message`, `result_json`.
+- `executed_by`.
+- `created_at`.
+
+Indexes:
+- `idx_job_runs_job` (`job_id`,`started_at`).
+- `idx_job_runs_status` (`status`,`started_at`).
