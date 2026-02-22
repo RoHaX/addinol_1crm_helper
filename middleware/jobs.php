@@ -43,9 +43,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 	if ($action === 'save_job') {
 		$jobId = (int)($_POST['job_id'] ?? 0);
 		$stepsRaw = trim((string)($_POST['steps_text'] ?? ''));
+		$stepsJsonRaw = trim((string)($_POST['steps_json'] ?? ''));
 		$defaultDue = trim((string)($_POST['step_due_at'] ?? ''));
 		$steps = [];
-		if ($stepsRaw !== '') {
+		if ($stepsJsonRaw !== '') {
+			$parsed = json_decode($stepsJsonRaw, true);
+			if (!is_array($parsed)) {
+				$params = $_GET;
+				$params['msg'] = 'Schritte JSON ist ungültig. Bitte prüfen.';
+				header('Location: ' . $_SERVER['PHP_SELF'] . '?' . http_build_query($params));
+				exit;
+			}
+			if (is_array($parsed)) {
+				foreach ($parsed as $item) {
+					if (!is_array($item)) {
+						continue;
+					}
+					$title = trim((string)($item['step_title'] ?? ''));
+					$type = trim((string)($item['step_type'] ?? 'note'));
+					$payload = $item['step_payload_json'] ?? null;
+					$dueAt = trim((string)($item['due_at'] ?? $defaultDue));
+					$isRequired = !empty($item['is_required']) ? 1 : 0;
+					if ($title === '') {
+						continue;
+					}
+					if ($payload !== null && !is_string($payload)) {
+						$payload = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+					}
+					$steps[] = [
+						'step_title' => $title,
+						'step_type' => $type !== '' ? $type : 'note',
+						'step_payload_json' => is_string($payload) ? trim($payload) : null,
+						'due_at' => $dueAt,
+						'is_required' => $isRequired,
+					];
+				}
+			}
+		}
+		if (!$steps && $stepsRaw !== '') {
 			$lines = preg_split('/\r\n|\r|\n/', $stepsRaw);
 			foreach ($lines as $line) {
 				$title = trim((string)$line);
@@ -186,7 +221,7 @@ if ($jobs) {
 	}));
 	if ($jobIds) {
 		$idList = implode(',', $jobIds);
-		$stepsRows = fetch_all_assoc_jobs($mysqli, "SELECT job_id, step_order, step_title, step_type, due_at FROM mw_job_steps WHERE job_id IN ($idList) ORDER BY job_id ASC, step_order ASC");
+		$stepsRows = fetch_all_assoc_jobs($mysqli, "SELECT job_id, step_order, step_title, step_type, step_payload_json, due_at FROM mw_job_steps WHERE job_id IN ($idList) ORDER BY job_id ASC, step_order ASC");
 		foreach ($stepsRows as $row) {
 			$jobId = (int)($row['job_id'] ?? 0);
 			$stepsByJob[$jobId][] = $row;
@@ -438,9 +473,17 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						$relationMeta = $relationDisplayMap[$jobId] ?? ['label' => '-', 'full' => '', 'url' => '', 'icon' => 'fas fa-link'];
 						$editSteps = $stepsByJob[$jobId] ?? [];
 						$stepsTextArr = [];
+						$stepsJsonArr = [];
 						$firstStepDue = '';
 						foreach ($editSteps as $stepItem) {
 							$stepsTextArr[] = (string)($stepItem['step_title'] ?? '');
+							$stepsJsonArr[] = [
+								'step_title' => (string)($stepItem['step_title'] ?? ''),
+								'step_type' => (string)($stepItem['step_type'] ?? 'note'),
+								'step_payload_json' => (string)($stepItem['step_payload_json'] ?? ''),
+								'due_at' => (string)($stepItem['due_at'] ?? ''),
+								'is_required' => 1,
+							];
 							if ($firstStepDue === '' && !empty($stepItem['due_at'])) {
 								$firstStepDue = (string)$stepItem['due_at'];
 							}
@@ -451,6 +494,7 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						$runAt = trim((string)($job['run_at'] ?? ''));
 						$runAtInput = $runAt !== '' ? date('Y-m-d\TH:i', strtotime($runAt)) : '';
 						$stepDueInput = $firstStepDue !== '' ? date('Y-m-d\TH:i', strtotime($firstStepDue)) : '';
+						$stepsJsonText = json_encode($stepsJsonArr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 						$editData = [
 							'id' => $jobId,
 							'title' => (string)($job['title'] ?? ''),
@@ -468,6 +512,7 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 							'timezone' => (string)($job['timezone'] ?? 'Europe/Vienna'),
 							'step_due_at' => $stepDueInput,
 							'steps_text' => $stepsText,
+							'steps_json' => $stepsJsonText ?: '[]',
 						];
 					?>
 					<tr>
@@ -481,17 +526,6 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 							</div>
 							<?php if (!empty($job['description'])): ?>
 								<div class="small text-muted"><?php echo htmlspecialchars((string)$job['description']); ?></div>
-							<?php endif; ?>
-							<?php if (!empty($stepsByJob[$jobId])): ?>
-								<div class="small mt-1">
-									<strong>Schritte:</strong>
-									<?php foreach ($stepsByJob[$jobId] as $step): ?>
-										<div>
-											#<?php echo (int)$step['step_order']; ?> - <?php echo htmlspecialchars((string)$step['step_title']); ?>
-											<span class="text-muted">(<?php echo htmlspecialchars((string)$step['step_type']); ?><?php echo !empty($step['due_at']) ? ', fällig: ' . htmlspecialchars((string)$step['due_at']) : ''; ?>)</span>
-										</div>
-									<?php endforeach; ?>
-								</div>
 							<?php endif; ?>
 						</td>
 						<td><?php echo htmlspecialchars((string)$job['job_type']); ?></td>
@@ -516,7 +550,18 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 								<div class="small text-muted"><?php echo htmlspecialchars($lastResult); ?></div>
 							<?php endif; ?>
 						</td>
-						<td><?php echo (int)($job['step_count'] ?? 0); ?></td>
+						<td>
+							<button
+								type="button"
+								class="btn btn-sm btn-outline-secondary steps-detail-btn"
+								data-job-id="<?php echo $jobId; ?>"
+								data-job-title="<?php echo htmlspecialchars((string)$job['title'], ENT_QUOTES); ?>"
+								data-steps="<?php echo htmlspecialchars(json_encode($stepsByJob[$jobId] ?? [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES); ?>"
+								title="Schritte anzeigen"
+							>
+								<i class="fas fa-tasks me-1"></i><?php echo (int)($job['step_count'] ?? 0); ?>
+							</button>
+						</td>
 						<td>
 							<div class="btn-group btn-group-sm" role="group">
 								<?php if (!$isSystemJob): ?>
@@ -588,6 +633,23 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						<i class="fas fa-trash-alt"></i> Verlauf leeren
 					</button>
 				</form>
+				<button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Schließen</button>
+			</div>
+		</div>
+	</div>
+</div>
+
+<div class="modal fade" id="stepsDetailModal" tabindex="-1" aria-hidden="true">
+	<div class="modal-dialog modal-lg modal-dialog-scrollable">
+		<div class="modal-content">
+			<div class="modal-header">
+				<h5 class="modal-title" id="stepsDetailTitle">Schritte</h5>
+				<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+			</div>
+			<div class="modal-body" id="stepsDetailBody">
+				<div class="small text-muted">Keine Schritte vorhanden.</div>
+			</div>
+			<div class="modal-footer">
 				<button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Schließen</button>
 			</div>
 		</div>
@@ -677,6 +739,13 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						<textarea name="steps_text" id="jobFormSteps" rows="3" class="form-control form-control-sm" placeholder="Angebot erstellen&#10;AB in Rechnung umwandeln"></textarea>
 					</div>
 					<div class="col-md-12">
+						<label class="form-label">Schritte (JSON, technisch)</label>
+						<textarea name="steps_json" id="jobFormStepsJson" rows="8" class="form-control form-control-sm font-monospace" placeholder='[{"step_title":"Mailbox pollen","step_type":"run_mail_poller","step_payload_json":"{\"script\":\"bin/poll.php\"}","due_at":"","is_required":1}]'></textarea>
+						<div class="form-text">
+							Hier sieht man, was wirklich ausgeführt wird: <code>step_type</code> + <code>step_payload_json</code>.
+						</div>
+					</div>
+					<div class="col-md-12">
 						<label class="form-label">Payload JSON (optional)</label>
 						<textarea name="payload_json" id="jobFormPayload" rows="2" class="form-control form-control-sm" placeholder='{"key":"value"}'></textarea>
 					</div>
@@ -706,6 +775,10 @@ document.addEventListener('DOMContentLoaded', () => {
 	const runHistoryModal = runHistoryModalEl ? new bootstrap.Modal(runHistoryModalEl) : null;
 	const runHistoryTitle = document.getElementById('runHistoryTitle');
 	const runHistoryBody = document.getElementById('runHistoryBody');
+	const stepsDetailModalEl = document.getElementById('stepsDetailModal');
+	const stepsDetailModal = stepsDetailModalEl ? new bootstrap.Modal(stepsDetailModalEl) : null;
+	const stepsDetailTitle = document.getElementById('stepsDetailTitle');
+	const stepsDetailBody = document.getElementById('stepsDetailBody');
 	const clearRunsJobId = document.getElementById('clearRunsJobId');
 	const clearRunsForm = document.getElementById('clearRunsForm');
 	const clearRunsBtn = document.getElementById('clearRunsBtn');
@@ -728,6 +801,7 @@ document.addEventListener('DOMContentLoaded', () => {
 	const jobFormTimezone = document.getElementById('jobFormTimezone');
 	const jobFormStepDue = document.getElementById('jobFormStepDue');
 	const jobFormSteps = document.getElementById('jobFormSteps');
+	const jobFormStepsJson = document.getElementById('jobFormStepsJson');
 	const jobFormPayload = document.getElementById('jobFormPayload');
 	const jobFormSubmitBtn = document.getElementById('jobFormSubmitBtn');
 	const createJobModalTitle = document.getElementById('createJobModalTitle');
@@ -778,6 +852,49 @@ document.addEventListener('DOMContentLoaded', () => {
 		});
 	});
 
+	document.querySelectorAll('.steps-detail-btn').forEach((btn) => {
+		btn.addEventListener('click', () => {
+			const jobId = btn.getAttribute('data-job-id') || '';
+			const jobTitle = btn.getAttribute('data-job-title') || '';
+			const stepsRaw = btn.getAttribute('data-steps') || '[]';
+			let steps = [];
+			try {
+				steps = JSON.parse(stepsRaw);
+			} catch (e) {
+				steps = [];
+			}
+
+			if (stepsDetailTitle) {
+				stepsDetailTitle.textContent = 'Schritte - Job #' + jobId + ' ' + jobTitle;
+			}
+			if (stepsDetailBody) {
+				if (!Array.isArray(steps) || steps.length === 0) {
+					stepsDetailBody.innerHTML = '<div class="small text-muted">Keine Schritte vorhanden.</div>';
+				} else {
+					const rows = steps.map((step) => {
+						const order = step.step_order || '-';
+						const title = step.step_title ? String(step.step_title).replaceAll('<', '&lt;').replaceAll('>', '&gt;') : '-';
+						const type = step.step_type ? String(step.step_type).replaceAll('<', '&lt;').replaceAll('>', '&gt;') : 'note';
+						const dueAt = step.due_at ? String(step.due_at).replaceAll('<', '&lt;').replaceAll('>', '&gt;') : '';
+						const payload = step.step_payload_json ? String(step.step_payload_json).replaceAll('<', '&lt;').replaceAll('>', '&gt;') : '';
+						return `
+							<div class="border rounded p-2 mb-2">
+								<div><strong>#${order} - ${title}</strong></div>
+								<div class="small text-muted mt-1">Handler: <code>${type}</code>${dueAt ? ` | fällig: ${dueAt}` : ''}</div>
+								${payload ? `<div class="small mt-1"><code>${payload}</code></div>` : ''}
+							</div>
+						`;
+					});
+					stepsDetailBody.innerHTML = rows.join('');
+				}
+			}
+
+			if (stepsDetailModal) {
+				stepsDetailModal.show();
+			}
+		});
+	});
+
 	if (clearRunsForm && clearRunsBtn) {
 		clearRunsForm.addEventListener('submit', (e) => {
 			const jobId = clearRunsJobId ? clearRunsJobId.value : '';
@@ -803,6 +920,7 @@ document.addEventListener('DOMContentLoaded', () => {
 		if (jobFormScheduleType) jobFormScheduleType.value = 'once';
 		if (jobFormRunMode) jobFormRunMode.value = 'manual';
 		if (jobFormTimezone) jobFormTimezone.value = 'Europe/Vienna';
+		if (jobFormStepsJson) jobFormStepsJson.value = '';
 		if (createJobModalTitle) createJobModalTitle.textContent = 'Neuen Job erstellen';
 		if (jobFormSubmitBtn) jobFormSubmitBtn.innerHTML = '<i class="fas fa-plus"></i> Job erstellen';
 	};
@@ -837,6 +955,7 @@ document.addEventListener('DOMContentLoaded', () => {
 			if (jobFormTimezone) jobFormTimezone.value = data.timezone || 'Europe/Vienna';
 			if (jobFormStepDue) jobFormStepDue.value = data.step_due_at || '';
 			if (jobFormSteps) jobFormSteps.value = data.steps_text || '';
+			if (jobFormStepsJson) jobFormStepsJson.value = data.steps_json || '';
 			if (jobFormPayload) jobFormPayload.value = data.payload_json || '';
 			if (createJobModalTitle) createJobModalTitle.textContent = 'Job bearbeiten #' + String(data.id || '');
 			if (jobFormSubmitBtn) jobFormSubmitBtn.innerHTML = '<i class="fas fa-save"></i> Job speichern';
