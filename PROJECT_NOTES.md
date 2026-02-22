@@ -61,3 +61,42 @@
     - `sales_order_lines` -> `invoice_lines`
     - `sales_order_adjustments` -> `invoice_adjustments`
   - Setzt AB-Status auf `Closed - Shipped and Invoiced`.
+
+### Jobs UI / Bedienung
+
+- `middleware/jobs.php` erweitert:
+  - Schrittedetails werden über eigenes Modal angezeigt (Button mit `fa-tasks` + Anzahl).
+  - Run-Historie wird über Modal angezeigt (`fa-history`).
+  - Verlauf je Job kann geleert werden.
+  - Neues Job-Formular im Modal; gleiches Modal für Anlegen + Bearbeiten.
+  - System-Jobs können bearbeitet werden, Speichern ist mit zusätzlichem Warn-Dialog abgesichert.
+  - Schrittdefinitionen können technisch als JSON gepflegt werden (`step_type`, `step_payload_json` sichtbar/editierbar).
+  - Bezugsspalte zeigt sprechende, klickbare CRM-Links statt reiner IDs (gekürzt + FA-Icon).
+
+### Neue System-Jobs / Worker
+
+- `src/JobService.php` erweitert:
+  - System-Job `system:mail_poll_5m` (alle 5 Minuten).
+  - System-Job `system:lagerheini_daily_0800` (täglich 08:00).
+  - System-Job `system:dachser_open_hourly` (stündlich).
+  - Neuer Step-Typ `run_dachser_bulk_check`.
+- `bin/dachser_bulk_check.php` neu:
+  - Prüft stündlich alle offenen Datensätze mit AT-Nummer (`Status != Zugestellt`, Auftrag offen).
+  - Nutzt denselben Status-Pfad wie API-Button (`middleware/dachser_status.php`) per CLI-Aufruf.
+
+### Polling / Logs
+
+- `bin/poll.php` erweitert:
+  - schreibt Poll-Summary mit Zählern (`new`, `imported`, `pending`, `scanned`, Fehler etc.).
+  - Summary erscheint im Job-Run-Ergebnis (`mw_job_runs.result_message`).
+
+### Dachser Endpoint (CLI-Fallback)
+
+- `middleware/dachser_status.php` angepasst:
+  - liest JSON bei CLI zusätzlich aus `php://stdin` (wenn `php://input` leer ist).
+  - ermöglicht dadurch konsistente Nutzung aus UI und Worker/Bulkjob.
+
+### Scheduling-Fix
+
+- `computeNextRunAt()` auf zeitzonenbasierte Berechnung umgestellt:
+  - korrekte Anzeige/Berechnung `next_run_at` für `interval_minutes` und `daily_time`.

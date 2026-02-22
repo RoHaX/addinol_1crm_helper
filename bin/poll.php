@@ -8,6 +8,15 @@ require_once __DIR__ . '/../src/ImapClient.php';
 $logger = new MwLogger(__DIR__ . '/../logs');
 $forceRecheck = getenv('FORCE_RECHECK') === '1';
 $allowedRecheck = ['new', 'queued', 'pending_import'];
+$lookbackDays = (int)(getenv('MW_POLL_LOOKBACK_DAYS') ?: 14);
+if ($lookbackDays < 1) {
+	$lookbackDays = 1;
+}
+if ($lookbackDays > 365) {
+	$lookbackDays = 365;
+}
+$lookbackCutoffTs = strtotime('-' . $lookbackDays . ' days');
+$imapSince = date('d-M-Y', $lookbackCutoffTs);
 
 $db = MwDb::getMysqli();
 if (!$db) {
@@ -33,14 +42,31 @@ $update = $db->prepare('UPDATE mw_tracked_mail SET message_id = ?, message_hash 
 $updateImported = $db->prepare('UPDATE mw_tracked_mail SET status = "imported", crm_email_id = ?, last_error = NULL, updated_at = NOW() WHERE id = ?');
 $updatePending = $db->prepare('UPDATE mw_tracked_mail SET status = "pending_import", last_error = NULL, updated_at = NOW() WHERE id = ?');
 
+$stats = [
+	'mailboxes' => count($mailboxes),
+	'lookback_days' => $lookbackDays,
+	'uids_scanned' => 0,
+	'new_tracked' => 0,
+	'marked_imported' => 0,
+	'marked_pending' => 0,
+	'skipped_old' => 0,
+	'skipped_duplicate' => 0,
+	'mail_errors' => 0,
+	'mailbox_errors' => 0,
+];
+
 foreach ($mailboxes as $mailbox) {
 	try {
 		clear_imap_runtime_messages();
 		$imap = new ImapClient(MW_IMAP_HOST, MW_IMAP_PORT, MW_IMAP_USER, MW_IMAP_PASS, MW_IMAP_FLAGS);
 		$imap->connect($mailbox);
-		$uids = $imap->search('ALL');
+		$uids = $imap->search('SINCE "' . $imapSince . '"');
+		if (!is_array($uids)) {
+			$uids = [];
+		}
 
 		foreach ($uids as $uid) {
+			$stats['uids_scanned']++;
 			try {
 				$headers = $imap->fetchHeaders($uid);
 				$body = $imap->fetchBody($uid);
@@ -51,7 +77,8 @@ foreach ($mailboxes as $mailbox) {
 				$fromAddr = $headers['from'] ?? null;
 				$subject = $headers['subject'] ?? null;
 				$date = $dateStr ? date('Y-m-d H:i:s', strtotime($dateStr)) : null;
-				if ($date && strtotime($date) < strtotime('-30 days')) {
+				if ($date && strtotime($date) < $lookbackCutoffTs) {
+					$stats['skipped_old']++;
 					continue;
 				}
 
@@ -80,6 +107,7 @@ foreach ($mailboxes as $mailbox) {
 				}
 
 				if ($existingHashId && (!$existingId || $existingHashId !== $existingId)) {
+					$stats['skipped_duplicate']++;
 					continue;
 				}
 
@@ -94,9 +122,15 @@ foreach ($mailboxes as $mailbox) {
 						if ($crmId) {
 							$updateImported->bind_param('si', $crmId, $existingId);
 							$updateImported->execute();
+							if ($updateImported->affected_rows > 0) {
+								$stats['marked_imported']++;
+							}
 						} else {
 							$updatePending->bind_param('i', $existingId);
 							$updatePending->execute();
+							if ($updatePending->affected_rows > 0) {
+								$stats['marked_pending']++;
+							}
 						}
 					}
 					continue;
@@ -106,17 +140,25 @@ foreach ($mailboxes as $mailbox) {
 				$insert->execute();
 				$newId = $db->insert_id;
 				if ($newId) {
+					$stats['new_tracked']++;
 					$crmId = find_crm_email_id($selectCrmByMessageId, $selectCrmByMessageIdNormalized, $messageId);
 					if ($crmId) {
 						$updateImported->bind_param('si', $crmId, $newId);
 						$updateImported->execute();
+						if ($updateImported->affected_rows > 0) {
+							$stats['marked_imported']++;
+						}
 					} else {
 						$updatePending->bind_param('i', $newId);
 						$updatePending->execute();
+						if ($updatePending->affected_rows > 0) {
+							$stats['marked_pending']++;
+						}
 					}
 				}
 			} catch (Throwable $e) {
 				$logger->error('poll mail error', ['mailbox' => $mailbox, 'uid' => $uid, 'error' => $e->getMessage()]);
+				$stats['mail_errors']++;
 				clear_imap_runtime_messages();
 			}
 		}
@@ -125,11 +167,33 @@ foreach ($mailboxes as $mailbox) {
 		clear_imap_runtime_messages();
 	} catch (Throwable $e) {
 		$logger->error('poll mailbox error', ['mailbox' => $mailbox, 'error' => $e->getMessage()]);
+		$stats['mailbox_errors']++;
 		clear_imap_runtime_messages();
 	}
 }
 
 clear_imap_runtime_messages();
+
+$summary = sprintf(
+	'Poll summary: lookback_days=%d, new=%d, imported=%d, pending=%d, scanned=%d, skipped_old=%d, skipped_duplicate=%d, mail_errors=%d, mailbox_errors=%d',
+	(int)$stats['lookback_days'],
+	(int)$stats['new_tracked'],
+	(int)$stats['marked_imported'],
+	(int)$stats['marked_pending'],
+	(int)$stats['uids_scanned'],
+	(int)$stats['skipped_old'],
+	(int)$stats['skipped_duplicate'],
+	(int)$stats['mail_errors'],
+	(int)$stats['mailbox_errors']
+);
+$logger->info('poll summary', $stats);
+echo $summary . PHP_EOL;
+
+maybe_send_telegram_alert($logger, $stats, $summary);
+
+if ((int)$stats['mailbox_errors'] > 0 || (int)$stats['mail_errors'] > 0) {
+	exit(2);
+}
 
 function normalize_message_id($messageId)
 {
@@ -188,4 +252,102 @@ function clear_imap_runtime_messages()
 	if (is_array($alerts)) {
 		// intentionally clear imap alert stack
 	}
+}
+
+function maybe_send_telegram_alert(MwLogger $logger, array $stats, string $summary): void
+{
+	$newTracked = (int)($stats['new_tracked'] ?? 0);
+	$botToken = trim((string)(getenv('TG_BOT_TOKEN') ?: getenv('TELEGRAM_BOT_TOKEN') ?: ''));
+	$chatId = trim((string)(getenv('TG_CHAT_ID') ?: getenv('TELEGRAM_CHAT_ID') ?: ''));
+	$minNew = (int)(getenv('TG_NOTIFY_MIN_NEW') ?: 1);
+	$cooldownSec = (int)(getenv('TG_NOTIFY_COOLDOWN_SEC') ?: 600);
+
+	if ($minNew < 1) {
+		$minNew = 1;
+	}
+	if ($cooldownSec < 0) {
+		$cooldownSec = 0;
+	}
+	if ($newTracked < $minNew) {
+		return;
+	}
+	if ($botToken === '' || $chatId === '') {
+		$logger->info('telegram alert skipped (missing config)', ['new_tracked' => $newTracked]);
+		return;
+	}
+	if (!telegram_cooldown_ok($cooldownSec)) {
+		$logger->info('telegram alert skipped (cooldown)', ['new_tracked' => $newTracked, 'cooldown_sec' => $cooldownSec]);
+		return;
+	}
+
+	$message = "Mail Poller\nNeue Mails: " . $newTracked . "\n" . $summary;
+	$ok = send_telegram_message($botToken, $chatId, $message);
+	if ($ok) {
+		telegram_cooldown_touch();
+		$logger->info('telegram alert sent', ['new_tracked' => $newTracked]);
+	} else {
+		$logger->error('telegram alert failed', ['new_tracked' => $newTracked]);
+	}
+}
+
+function send_telegram_message(string $botToken, string $chatId, string $message): bool
+{
+	$url = 'https://api.telegram.org/bot' . rawurlencode($botToken) . '/sendMessage';
+	$payload = http_build_query([
+		'chat_id' => $chatId,
+		'text' => $message,
+		'disable_web_page_preview' => 'true',
+	], '', '&');
+
+	$opts = [
+		'http' => [
+			'method' => 'POST',
+			'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+			'content' => $payload,
+			'timeout' => 15,
+		],
+	];
+	$ctx = stream_context_create($opts);
+	$res = @file_get_contents($url, false, $ctx);
+	if ($res === false) {
+		return false;
+	}
+	$decoded = json_decode((string)$res, true);
+	return is_array($decoded) && !empty($decoded['ok']);
+}
+
+function telegram_cooldown_state_file(): string
+{
+	return __DIR__ . '/../logs/telegram_mail_notify.state.json';
+}
+
+function telegram_cooldown_ok(int $cooldownSec): bool
+{
+	if ($cooldownSec <= 0) {
+		return true;
+	}
+	$file = telegram_cooldown_state_file();
+	if (!is_file($file)) {
+		return true;
+	}
+	$raw = (string)@file_get_contents($file);
+	$data = json_decode($raw, true);
+	if (!is_array($data)) {
+		return true;
+	}
+	$lastTs = (int)($data['last_sent_ts'] ?? 0);
+	if ($lastTs <= 0) {
+		return true;
+	}
+	return (time() - $lastTs) >= $cooldownSec;
+}
+
+function telegram_cooldown_touch(): void
+{
+	$file = telegram_cooldown_state_file();
+	$data = [
+		'last_sent_ts' => time(),
+		'last_sent_at' => date('Y-m-d H:i:s'),
+	];
+	@file_put_contents($file, json_encode($data, JSON_UNESCAPED_SLASHES));
 }

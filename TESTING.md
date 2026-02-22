@@ -84,6 +84,28 @@ Kurze manuelle Testmatrix für Lieferstatus/Dachser/Referenz-Extraktion plus Job
    - Schritt `Mailbox pollen` mit `step_type = run_mail_poller` sichtbar.
    - Intervall: 5 Minuten.
 
+### 9) System-Job Dachser stündlich sichtbar
+
+1. `middleware/jobs.php` öffnen.
+2. Erwartung:
+   - Job `Dachser API Check (offen)` vorhanden (`system:dachser_open_hourly`).
+   - Schritt `Offene AT-Status prüfen` mit `step_type = run_dachser_bulk_check`.
+   - Intervall: 60 Minuten.
+
+### 10) Poll-Summary im Run-Log
+
+1. Mail-Poller manuell starten (`Run` bei `Mail Poller`) oder auf Schedule warten.
+2. Erwartung in Run-Historie:
+   - Ergebnis enthält `Poll summary: new=..., imported=..., pending=..., ...`.
+
+### 11) Next-Run Anzeige Intervalljobs
+
+1. Bei `Mail Poller`/`Dachser API Check (offen)` `Nächster Lauf` prüfen.
+2. Erwartung:
+   - Mail Poller: ca. `+5 Minuten` zum letzten Lauf.
+   - Dachser-Check: ca. `+60 Minuten` zum letzten Lauf.
+   - Keine dauerhafte 1h-Verschiebung durch Zeitzonenfehler.
+
 ## Technische Checks
 
 ```bash
@@ -93,6 +115,8 @@ phpenv shell 8.3 && php -l bin/extract_addinol_refs.php
 phpenv shell 8.3 && php -l middleware/jobs.php
 phpenv shell 8.3 && php -l src/JobService.php
 phpenv shell 8.3 && php -l bin/jobs_worker.php
+phpenv shell 8.3 && php -l bin/dachser_bulk_check.php
+phpenv shell 8.3 && php -l bin/poll.php
 ```
 
 ## Optionaler DB-Check

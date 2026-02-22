@@ -126,8 +126,22 @@ Status-/Log-Dateien:
   - `convert_ab_to_invoice`: wandelt AB (`sales_orders`) in Rechnung (`invoice`) um.
   - Idempotent: wenn bereits Rechnung zu `from_so_id` existiert, wird keine zweite erstellt.
   - `run_mail_poller`: führt `bin/poll.php` aus.
+  - `run_lagerheini`: führt `lagerheini.php` aus.
+  - `run_dachser_bulk_check`: führt stündlichen Dachser-Bulkcheck aus (`bin/dachser_bulk_check.php`).
 - System-Job:
   - `Mail Poller` (`job_key = system:mail_poll_5m`) wird automatisch angelegt und läuft alle 5 Minuten über `jobs_worker`.
+  - `Lagerheini` (`job_key = system:lagerheini_daily_0800`) wird automatisch angelegt und läuft täglich um 08:00.
+  - `Dachser API Check (offen)` (`job_key = system:dachser_open_hourly`) wird automatisch angelegt und läuft stündlich.
+
+UI-Hinweise:
+- Schrittedetails werden in `jobs.php` über Modal geöffnet (Button mit `fa-tasks` + Anzahl).
+- Run-Historie wird per Modal (`fa-history`) angezeigt; Verlauf kann je Job geleert werden.
+- System-Jobs sind bearbeitbar, Speichern zeigt einen zusätzlichen Warn-Dialog.
+
+Mail-Poller Ergebnis:
+- `bin/poll.php` schreibt eine Summary in die Ausgabe:
+  - `Poll summary: new=..., imported=..., pending=..., ...`
+- Diese Summary ist direkt im Run-Resultat (`mw_job_runs.result_message`) sichtbar.
 
 Beispiel:
 

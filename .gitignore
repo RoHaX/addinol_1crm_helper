@@ -2,3 +2,5 @@ pdfexport/
 koolreport/
 backup/
 logs/
+.env
+.env.local

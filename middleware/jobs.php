@@ -31,6 +31,18 @@ function fetch_all_assoc_jobs(mysqli $db, string $sql, string $types = '', array
 	return $out;
 }
 
+function jobs_decode_json_object(string $json): ?array {
+	$json = trim($json);
+	if ($json === '') {
+		return [];
+	}
+	$decoded = json_decode($json, true);
+	if (!is_array($decoded)) {
+		return null;
+	}
+	return $decoded;
+}
+
 $statusFilter = trim((string)($_GET['status'] ?? ''));
 $modeFilter = trim((string)($_GET['mode'] ?? ''));
 $q = trim((string)($_GET['q'] ?? ''));
@@ -45,6 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 		$stepsRaw = trim((string)($_POST['steps_text'] ?? ''));
 		$stepsJsonRaw = trim((string)($_POST['steps_json'] ?? ''));
 		$defaultDue = trim((string)($_POST['step_due_at'] ?? ''));
+		$notifyTelegram = !empty($_POST['notify_telegram']);
 		$steps = [];
 		if ($stepsJsonRaw !== '') {
 			$parsed = json_decode($stepsJsonRaw, true);
@@ -97,6 +110,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 			}
 		}
 
+		$payloadInput = trim((string)($_POST['payload_json'] ?? ''));
+		$payloadData = jobs_decode_json_object($payloadInput);
+		if ($payloadData === null) {
+			$params = $_GET;
+			$params['msg'] = 'Payload JSON ist ungültig. Bitte prüfen.';
+			header('Location: ' . $_SERVER['PHP_SELF'] . '?' . http_build_query($params));
+			exit;
+		}
+		if ($notifyTelegram) {
+			$payloadData['notify_telegram'] = true;
+		} else {
+			unset($payloadData['notify_telegram']);
+		}
+		$payloadJsonForSave = $payloadData ? json_encode($payloadData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : '';
+		$allowedWeekdaysRaw = $_POST['allowed_weekdays'] ?? [];
+		if (!is_array($allowedWeekdaysRaw)) {
+			$allowedWeekdaysRaw = $allowedWeekdaysRaw !== '' ? explode(',', (string)$allowedWeekdaysRaw) : [];
+		}
+
 		$job = [
 			'title' => trim((string)($_POST['title'] ?? '')),
 			'job_type' => trim((string)($_POST['job_type'] ?? 'generic')),
@@ -104,13 +136,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 			'relation_type' => trim((string)($_POST['relation_type'] ?? 'none')),
 			'relation_id' => trim((string)($_POST['relation_id'] ?? '')),
 			'account_id' => trim((string)($_POST['account_id'] ?? '')),
-			'payload_json' => trim((string)($_POST['payload_json'] ?? '')),
+			'payload_json' => $payloadJsonForSave,
 			'schedule_type' => trim((string)($_POST['schedule_type'] ?? 'once')),
 			'run_mode' => trim((string)($_POST['run_mode'] ?? 'manual')),
 			'run_at' => trim((string)($_POST['run_at'] ?? '')),
 			'interval_minutes' => (int)($_POST['interval_minutes'] ?? 0),
 			'daily_time' => trim((string)($_POST['daily_time'] ?? '')),
 			'timezone' => trim((string)($_POST['timezone'] ?? 'Europe/Vienna')),
+			'allowed_weekdays' => $allowedWeekdaysRaw,
+			'allowed_start_time' => trim((string)($_POST['allowed_start_time'] ?? '')),
+			'allowed_end_time' => trim((string)($_POST['allowed_end_time'] ?? '')),
 		];
 
 		$result = $jobId > 0
@@ -242,14 +277,49 @@ if ($jobs) {
 
 function schedule_label(array $job): string {
 	$type = (string)($job['schedule_type'] ?? 'once');
+	$parts = [];
 	if ($type === 'interval_minutes') {
-		return 'Alle ' . (int)($job['interval_minutes'] ?? 0) . ' Min.';
+		$parts[] = 'Alle ' . (int)($job['interval_minutes'] ?? 0) . ' Min.';
+	} elseif ($type === 'daily_time') {
+		$parts[] = 'Täglich ' . htmlspecialchars((string)($job['daily_time'] ?? ''));
+	} else {
+		$runAt = trim((string)($job['run_at'] ?? ''));
+		$parts[] = $runAt !== '' ? 'Einmalig: ' . htmlspecialchars($runAt) : 'Einmalig (sofort)';
 	}
-	if ($type === 'daily_time') {
-		return 'Täglich ' . htmlspecialchars((string)($job['daily_time'] ?? ''));
+
+	$wdRaw = trim((string)($job['allowed_weekdays'] ?? '1,2,3,4,5,6,7'));
+	$wdMap = ['1' => 'Mo', '2' => 'Di', '3' => 'Mi', '4' => 'Do', '5' => 'Fr', '6' => 'Sa', '7' => 'So'];
+	$wdParts = array_values(array_filter(array_map('trim', explode(',', $wdRaw)), static function ($v) {
+		return $v !== '';
+	}));
+	$weekLabel = '';
+	if ($wdParts && implode(',', $wdParts) !== '1,2,3,4,5,6,7') {
+		if (implode(',', $wdParts) === '1,2,3,4,5') {
+			$weekLabel = 'Werktage';
+		} else {
+			$labels = [];
+			foreach ($wdParts as $wd) {
+				if (isset($wdMap[$wd])) {
+					$labels[] = $wdMap[$wd];
+				}
+			}
+			if ($labels) {
+				$weekLabel = implode(',', $labels);
+			}
+		}
 	}
-	$runAt = trim((string)($job['run_at'] ?? ''));
-	return $runAt !== '' ? 'Einmalig: ' . htmlspecialchars($runAt) : 'Einmalig (sofort)';
+
+	$start = trim((string)($job['allowed_start_time'] ?? ''));
+	$end = trim((string)($job['allowed_end_time'] ?? ''));
+	$timeLabel = '';
+	if ($start !== '' || $end !== '') {
+		$timeLabel = ($start !== '' ? substr($start, 0, 5) : '00:00') . '-' . ($end !== '' ? substr($end, 0, 5) : '23:59');
+	}
+
+	if ($weekLabel !== '' || $timeLabel !== '') {
+		$parts[] = trim($weekLabel . ($weekLabel !== '' && $timeLabel !== '' ? ' ' : '') . $timeLabel);
+	}
+	return implode(' | ', $parts);
 }
 
 function shorten_label(string $text, int $max = 20): string {
@@ -493,8 +563,21 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						})));
 						$runAt = trim((string)($job['run_at'] ?? ''));
 						$runAtInput = $runAt !== '' ? date('Y-m-d\TH:i', strtotime($runAt)) : '';
+						$allowedStartTime = trim((string)($job['allowed_start_time'] ?? ''));
+						$allowedEndTime = trim((string)($job['allowed_end_time'] ?? ''));
+						$allowedStartTimeInput = $allowedStartTime !== '' ? substr($allowedStartTime, 0, 5) : '';
+						$allowedEndTimeInput = $allowedEndTime !== '' ? substr($allowedEndTime, 0, 5) : '';
 						$stepDueInput = $firstStepDue !== '' ? date('Y-m-d\TH:i', strtotime($firstStepDue)) : '';
 						$stepsJsonText = json_encode($stepsJsonArr, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+						$payloadRaw = trim((string)($job['payload_json'] ?? ''));
+						$payloadDecoded = jobs_decode_json_object($payloadRaw);
+						$notifyTelegram = false;
+						$payloadForm = $payloadRaw;
+						if (is_array($payloadDecoded)) {
+							$notifyTelegram = !empty($payloadDecoded['notify_telegram']);
+							unset($payloadDecoded['notify_telegram']);
+							$payloadForm = $payloadDecoded ? (string)json_encode($payloadDecoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) : '';
+						}
 						$editData = [
 							'id' => $jobId,
 							'title' => (string)($job['title'] ?? ''),
@@ -503,13 +586,17 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 							'relation_type' => (string)($job['relation_type'] ?? 'none'),
 							'relation_id' => (string)($job['relation_id'] ?? ''),
 							'account_id' => (string)($job['account_id'] ?? ''),
-							'payload_json' => (string)($job['payload_json'] ?? ''),
+							'payload_json' => $payloadForm,
+							'notify_telegram' => $notifyTelegram ? 1 : 0,
 							'schedule_type' => (string)($job['schedule_type'] ?? 'once'),
 							'run_mode' => (string)($job['run_mode'] ?? 'manual'),
 							'run_at' => $runAtInput,
 							'interval_minutes' => (string)($job['interval_minutes'] ?? ''),
 							'daily_time' => (string)($job['daily_time'] ?? ''),
 							'timezone' => (string)($job['timezone'] ?? 'Europe/Vienna'),
+							'allowed_weekdays' => (string)($job['allowed_weekdays'] ?? '1,2,3,4,5,6,7'),
+							'allowed_start_time' => $allowedStartTimeInput,
+							'allowed_end_time' => $allowedEndTimeInput,
 							'step_due_at' => $stepDueInput,
 							'steps_text' => $stepsText,
 							'steps_json' => $stepsJsonText ?: '[]',
@@ -522,6 +609,9 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 								<?php echo htmlspecialchars((string)$job['title']); ?>
 								<?php if ($isSystemJob): ?>
 									<span class="badge text-bg-info ms-1">System-Job</span>
+								<?php endif; ?>
+								<?php if (!empty($notifyTelegram)): ?>
+									<span class="badge text-bg-success ms-1"><i class="fab fa-telegram-plane me-1"></i>Telegram</span>
 								<?php endif; ?>
 							</div>
 							<?php if (!empty($job['description'])): ?>
@@ -564,16 +654,15 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 						</td>
 						<td>
 							<div class="btn-group btn-group-sm" role="group">
-								<?php if (!$isSystemJob): ?>
-									<button
-										type="button"
-										class="btn btn-outline-secondary edit-job-btn"
-										data-job="<?php echo htmlspecialchars(json_encode($editData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES); ?>"
-										title="Job bearbeiten"
-									>
-										<i class="fas fa-edit"></i>
-									</button>
-								<?php endif; ?>
+								<button
+									type="button"
+									class="btn btn-outline-secondary edit-job-btn"
+									data-job="<?php echo htmlspecialchars(json_encode($editData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), ENT_QUOTES); ?>"
+									data-is-system="<?php echo $isSystemJob ? '1' : '0'; ?>"
+									title="Job bearbeiten"
+								>
+									<i class="fas fa-edit"></i>
+								</button>
 								<button
 									type="button"
 									class="btn btn-outline-secondary run-history-btn"
@@ -706,6 +795,14 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 							<option value="auto">Automatisch</option>
 						</select>
 					</div>
+					<div class="col-md-2 d-flex align-items-end">
+						<div class="form-check mb-2">
+							<input class="form-check-input" type="checkbox" name="notify_telegram" id="jobFormNotifyTelegram" value="1">
+							<label class="form-check-label" for="jobFormNotifyTelegram">
+								Telegram benachrichtigen
+							</label>
+						</div>
+					</div>
 					<div class="col-md-2">
 						<label class="form-label">Plan</label>
 						<select name="schedule_type" id="jobFormScheduleType" class="form-select form-select-sm">
@@ -729,6 +826,25 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 					<div class="col-md-2">
 						<label class="form-label">TZ</label>
 						<input type="text" name="timezone" id="jobFormTimezone" class="form-control form-control-sm" value="Europe/Vienna">
+					</div>
+					<div class="col-md-3">
+						<label class="form-label d-block">Erlaubte Tage</label>
+						<div class="d-flex flex-wrap gap-2 small">
+							<?php foreach (['1' => 'Mo', '2' => 'Di', '3' => 'Mi', '4' => 'Do', '5' => 'Fr', '6' => 'Sa', '7' => 'So'] as $wdValue => $wdLabel): ?>
+								<div class="form-check form-check-inline me-0">
+									<input class="form-check-input allowed-weekday" type="checkbox" name="allowed_weekdays[]" id="jobFormWeekday<?php echo $wdValue; ?>" value="<?php echo $wdValue; ?>" checked>
+									<label class="form-check-label" for="jobFormWeekday<?php echo $wdValue; ?>"><?php echo $wdLabel; ?></label>
+								</div>
+							<?php endforeach; ?>
+						</div>
+					</div>
+					<div class="col-md-2">
+						<label class="form-label">Startzeit</label>
+						<input type="time" name="allowed_start_time" id="jobFormAllowedStart" class="form-control form-control-sm">
+					</div>
+					<div class="col-md-2">
+						<label class="form-label">Endzeit</label>
+						<input type="time" name="allowed_end_time" id="jobFormAllowedEnd" class="form-control form-control-sm">
 					</div>
 					<div class="col-md-2">
 						<label class="form-label">Schritte fällig</label>
@@ -795,16 +911,21 @@ document.addEventListener('DOMContentLoaded', () => {
 	const jobFormAccountId = document.getElementById('jobFormAccountId');
 	const jobFormScheduleType = document.getElementById('jobFormScheduleType');
 	const jobFormRunMode = document.getElementById('jobFormRunMode');
+	const jobFormNotifyTelegram = document.getElementById('jobFormNotifyTelegram');
 	const jobFormRunAt = document.getElementById('jobFormRunAt');
 	const jobFormInterval = document.getElementById('jobFormInterval');
 	const jobFormDailyTime = document.getElementById('jobFormDailyTime');
 	const jobFormTimezone = document.getElementById('jobFormTimezone');
+	const jobFormAllowedStart = document.getElementById('jobFormAllowedStart');
+	const jobFormAllowedEnd = document.getElementById('jobFormAllowedEnd');
 	const jobFormStepDue = document.getElementById('jobFormStepDue');
 	const jobFormSteps = document.getElementById('jobFormSteps');
 	const jobFormStepsJson = document.getElementById('jobFormStepsJson');
 	const jobFormPayload = document.getElementById('jobFormPayload');
 	const jobFormSubmitBtn = document.getElementById('jobFormSubmitBtn');
 	const createJobModalTitle = document.getElementById('createJobModalTitle');
+	const weekdayCheckboxes = Array.from(document.querySelectorAll('.allowed-weekday'));
+	let editingSystemJob = false;
 
 	document.querySelectorAll('.run-history-btn').forEach((btn) => {
 		btn.addEventListener('click', () => {
@@ -919,10 +1040,17 @@ document.addEventListener('DOMContentLoaded', () => {
 		if (jobFormRelationType) jobFormRelationType.value = 'none';
 		if (jobFormScheduleType) jobFormScheduleType.value = 'once';
 		if (jobFormRunMode) jobFormRunMode.value = 'manual';
+		if (jobFormNotifyTelegram) jobFormNotifyTelegram.checked = false;
 		if (jobFormTimezone) jobFormTimezone.value = 'Europe/Vienna';
+		if (jobFormAllowedStart) jobFormAllowedStart.value = '';
+		if (jobFormAllowedEnd) jobFormAllowedEnd.value = '';
+		weekdayCheckboxes.forEach((cb) => {
+			cb.checked = true;
+		});
 		if (jobFormStepsJson) jobFormStepsJson.value = '';
 		if (createJobModalTitle) createJobModalTitle.textContent = 'Neuen Job erstellen';
 		if (jobFormSubmitBtn) jobFormSubmitBtn.innerHTML = '<i class="fas fa-plus"></i> Job erstellen';
+		editingSystemJob = false;
 	};
 
 	if (createBtn) {
@@ -949,21 +1077,45 @@ document.addEventListener('DOMContentLoaded', () => {
 			if (jobFormAccountId) jobFormAccountId.value = data.account_id || '';
 			if (jobFormScheduleType) jobFormScheduleType.value = data.schedule_type || 'once';
 			if (jobFormRunMode) jobFormRunMode.value = data.run_mode || 'manual';
+			if (jobFormNotifyTelegram) jobFormNotifyTelegram.checked = Number(data.notify_telegram || 0) === 1;
 			if (jobFormRunAt) jobFormRunAt.value = data.run_at || '';
 			if (jobFormInterval) jobFormInterval.value = data.interval_minutes || '';
 			if (jobFormDailyTime) jobFormDailyTime.value = data.daily_time || '';
 			if (jobFormTimezone) jobFormTimezone.value = data.timezone || 'Europe/Vienna';
+			if (jobFormAllowedStart) jobFormAllowedStart.value = data.allowed_start_time || '';
+			if (jobFormAllowedEnd) jobFormAllowedEnd.value = data.allowed_end_time || '';
+			const allowedWeekdays = String(data.allowed_weekdays || '1,2,3,4,5,6,7')
+				.split(',')
+				.map((v) => v.trim())
+				.filter((v) => v !== '');
+			const allowedSet = new Set(allowedWeekdays);
+			weekdayCheckboxes.forEach((cb) => {
+				cb.checked = allowedSet.size === 0 ? true : allowedSet.has(cb.value);
+			});
 			if (jobFormStepDue) jobFormStepDue.value = data.step_due_at || '';
 			if (jobFormSteps) jobFormSteps.value = data.steps_text || '';
 			if (jobFormStepsJson) jobFormStepsJson.value = data.steps_json || '';
 			if (jobFormPayload) jobFormPayload.value = data.payload_json || '';
 			if (createJobModalTitle) createJobModalTitle.textContent = 'Job bearbeiten #' + String(data.id || '');
 			if (jobFormSubmitBtn) jobFormSubmitBtn.innerHTML = '<i class="fas fa-save"></i> Job speichern';
+			editingSystemJob = btn.getAttribute('data-is-system') === '1';
 			if (createJobModal) {
 				createJobModal.show();
 			}
 		});
 	});
+
+	if (jobForm) {
+		jobForm.addEventListener('submit', (e) => {
+			if (!editingSystemJob) {
+				return;
+			}
+			const ok = window.confirm('Achtung: Du bearbeitest einen System-Job. Diese Änderung beeinflusst automatische Abläufe. Wirklich speichern?');
+			if (!ok) {
+				e.preventDefault();
+			}
+		});
+	}
 });
 </script>
 </body>

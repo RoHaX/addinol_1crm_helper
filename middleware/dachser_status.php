@@ -14,7 +14,15 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 	exit;
 }
 
-$payload = json_decode((string)file_get_contents('php://input'), true);
+$rawInput = (string)file_get_contents('php://input');
+if ($rawInput === '' && PHP_SAPI === 'cli') {
+	$stdin = fopen('php://stdin', 'r');
+	if (is_resource($stdin)) {
+		$rawInput = (string)stream_get_contents($stdin);
+		fclose($stdin);
+	}
+}
+$payload = json_decode($rawInput, true);
 $reference = trim((string)($payload['reference'] ?? ''));
 $purchaseOrderId = trim((string)($payload['purchase_order_id'] ?? ''));
 if ($reference === '') {

@@ -19,6 +19,7 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
   - `bin/worker.php` (Queue-Worker)
   - `bin/extract_addinol_refs.php` (BE/AT aus PDF extrahieren)
   - `bin/jobs_worker.php` (Auto-Job-Worker)
+  - `bin/dachser_bulk_check.php` (stündlicher Dachser-Status-Bulkcheck für offene Aufträge)
 - Shared:
   - `db.inc.php` (DB-Verbindung)
   - `src/MwLogger.php` (JSON-Line Logging)
@@ -55,6 +56,14 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
    - wird in `JobService::ensureTables()` automatisch angelegt,
    - enthält Schritt `run_mail_poller` (`bin/poll.php`),
    - läuft alle 5 Minuten über denselben `jobs_worker`.
+7. System-Job `system:dachser_open_hourly`:
+   - wird in `JobService::ensureTables()` automatisch angelegt,
+   - enthält Schritt `run_dachser_bulk_check` (`bin/dachser_bulk_check.php`),
+   - läuft stündlich über denselben `jobs_worker`.
+8. System-Job `system:lagerheini_daily_0800`:
+   - wird in `JobService::ensureTables()` automatisch angelegt,
+   - enthält Schritt `run_lagerheini` (`lagerheini.php`),
+   - läuft täglich um 08:00 über denselben `jobs_worker`.
 
 ## Data Model (Relevant)
 
@@ -91,3 +100,4 @@ Dieses Dokument beschreibt die Middleware- und Lieferstatus-Architektur im Proje
 - DB-Zugriff über bestehendes `db.inc.php`.
 - Änderungen klein und konsistent mit bestehendem PHP-Stil.
 - Retry-sichere/robuste Verarbeitung bevorzugen (insb. bei externen Seiten).
+- Zeitplanung erfolgt zeitzonenbasiert über Job-Feld `timezone` (Standard `Europe/Vienna`) für korrekte `next_run_at`-Werte bei Intervall-/Daily-Jobs.

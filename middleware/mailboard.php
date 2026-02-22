@@ -12,9 +12,10 @@
 	$dateFrom = $_GET['date_from'] ?? '';
 	$dateTo = $_GET['date_to'] ?? '';
 	$q = trim($_GET['q'] ?? '');
+	$maxRows = 1500;
 
 	if ($dateFrom === '' && $dateTo === '') {
-		$dateFrom = date('Y-m-d', strtotime('-30 days'));
+		$dateFrom = date('Y-m-d', strtotime('-14 days'));
 	}
 
 	$where = [];
@@ -27,12 +28,12 @@
 		$types .= 's';
 	}
 	if ($dateFrom !== '') {
-		$where[] = 'date >= ?';
+		$where[] = 'm.date >= ?';
 		$params[] = $dateFrom . ' 00:00:00';
 		$types .= 's';
 	}
 	if ($dateTo !== '') {
-		$where[] = 'date <= ?';
+		$where[] = 'm.date <= ?';
 		$params[] = $dateTo . ' 23:59:59';
 		$types .= 's';
 	}
@@ -52,7 +53,7 @@
 	if ($where) {
 		$sql .= " WHERE " . implode(" AND ", $where);
 	}
-	$sql .= " ORDER BY date DESC, id DESC";
+	$sql .= " ORDER BY m.date DESC, m.id DESC LIMIT " . (int)$maxRows;
 
 	$stmt = $mysqli->prepare($sql);
 	if ($stmt && $params) {
@@ -83,6 +84,7 @@
 <div class="container-fluid py-3">
 	<div class="d-flex align-items-center justify-content-between mb-3">
 		<h1 class="h3 mb-0">Mailboard</h1>
+		<div class="small text-muted me-3">Standard: letzte 14 Tage, max. <?php echo (int)$maxRows; ?> Einträge</div>
 		<button class="btn btn-sm btn-outline-primary" id="runPollerBtn">
 			<i class="fas fa-sync-alt"></i> Poller starten
 		</button>

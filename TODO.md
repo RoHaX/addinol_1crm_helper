@@ -12,3 +12,5 @@
 - [ ] `bin/extract_addinol_refs.php`: OCR-Fallback für Scan-PDFs ergänzen (aktuell nur textbasierte PDFs via Ghostscript-Textextraktion).
 - [ ] Optionales Matching verbessern:
   Für Fälle ohne `Ihre Bestellung` (BE) alternative Zuordnung über Note-/E-Mail-Verknüpfung und zusätzliche Heuristiken.
+- [ ] Telegram-Inbound ergänzen:
+  Antworten auf Bot-Nachrichten verarbeiten (z. B. `/status`, `/jobs`) via `getUpdates`-Poller oder Webhook-Endpoint.

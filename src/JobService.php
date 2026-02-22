@@ -2,6 +2,8 @@
 
 class JobService
 {
+	private static bool $envLoaded = false;
+
 	public static function ensureTables(?mysqli $db): bool
 	{
 		if (!$db) {
@@ -26,6 +28,9 @@ class JobService
 			interval_minutes INT UNSIGNED NULL,
 			daily_time TIME NULL,
 			timezone VARCHAR(64) NOT NULL DEFAULT 'Europe/Vienna',
+			allowed_weekdays VARCHAR(32) NOT NULL DEFAULT '1,2,3,4,5,6,7',
+			allowed_start_time TIME NULL,
+			allowed_end_time TIME NULL,
 			status ENUM('active','paused','done','error','archived') NOT NULL DEFAULT 'active',
 			last_run_at DATETIME NULL,
 			last_result ENUM('ok','error','skipped') NULL,
@@ -77,6 +82,9 @@ class JobService
 			if (!$db->query($query)) {
 				return false;
 			}
+		}
+		if (!self::ensureJobColumns($db)) {
+			return false;
 		}
 		if (!self::ensureSystemJobs($db)) {
 			return false;
@@ -243,6 +251,9 @@ class JobService
 		if ($timezone === '') {
 			$timezone = 'Europe/Vienna';
 		}
+		$allowedWeekdays = self::normalizeAllowedWeekdays($job['allowed_weekdays'] ?? null);
+		$allowedStartTime = self::normalizeTimeValue((string)($job['allowed_start_time'] ?? ''));
+		$allowedEndTime = self::normalizeTimeValue((string)($job['allowed_end_time'] ?? ''));
 
 		$nextRunAt = self::computeNextRunAt([
 			'schedule_type' => $scheduleType,
@@ -250,16 +261,20 @@ class JobService
 			'run_at' => $runAtDb,
 			'interval_minutes' => $intervalMinutes,
 			'daily_time' => $dailyTime,
-		]);
+			'timezone' => $timezone,
+			'allowed_weekdays' => $allowedWeekdays,
+			'allowed_start_time' => $allowedStartTime,
+			'allowed_end_time' => $allowedEndTime,
+		], self::dbNowString($db));
 
 		$insert = $db->prepare('INSERT INTO mw_jobs
-			(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, interval_minutes, daily_time, timezone, status, created_at, updated_at)
-			VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"active",NOW(),NOW())');
+			(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, interval_minutes, daily_time, timezone, allowed_weekdays, allowed_start_time, allowed_end_time, status, created_at, updated_at)
+			VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"active",NOW(),NOW())');
 		if (!$insert) {
 			return ['ok' => false, 'reason' => 'insert_prepare_failed'];
 		}
 		$insert->bind_param(
-			'sssssssssssiss',
+			'sssssssssssisssss',
 			$title,
 			$jobType,
 			$description,
@@ -273,7 +288,10 @@ class JobService
 			$nextRunAt,
 			$intervalMinutes,
 			$dailyTime,
-			$timezone
+			$timezone,
+			$allowedWeekdays,
+			$allowedStartTime,
+			$allowedEndTime
 		);
 		if (!$insert->execute()) {
 			return ['ok' => false, 'reason' => 'insert_failed'];
@@ -299,9 +317,6 @@ class JobService
 		$current = self::getJobById($db, $jobId);
 		if (!$current) {
 			return ['ok' => false, 'reason' => 'job_not_found'];
-		}
-		if (strpos((string)($current['job_key'] ?? ''), 'system:') === 0) {
-			return ['ok' => false, 'reason' => 'system_job_readonly'];
 		}
 
 		$title = trim((string)($job['title'] ?? ''));
@@ -352,6 +367,9 @@ class JobService
 		if ($timezone === '') {
 			$timezone = 'Europe/Vienna';
 		}
+		$allowedWeekdays = self::normalizeAllowedWeekdays($job['allowed_weekdays'] ?? null);
+		$allowedStartTime = self::normalizeTimeValue((string)($job['allowed_start_time'] ?? ''));
+		$allowedEndTime = self::normalizeTimeValue((string)($job['allowed_end_time'] ?? ''));
 
 		$nextRunAt = self::computeNextRunAt([
 			'schedule_type' => $scheduleType,
@@ -359,18 +377,22 @@ class JobService
 			'run_at' => $runAtDb,
 			'interval_minutes' => $intervalMinutes,
 			'daily_time' => $dailyTime,
-		]);
+			'timezone' => $timezone,
+			'allowed_weekdays' => $allowedWeekdays,
+			'allowed_start_time' => $allowedStartTime,
+			'allowed_end_time' => $allowedEndTime,
+		], self::dbNowString($db));
 
 		$update = $db->prepare('UPDATE mw_jobs
 			SET title = ?, job_type = ?, description = ?, relation_type = ?, relation_id = ?, account_id = ?, payload_json = ?,
-				schedule_type = ?, run_mode = ?, run_at = ?, next_run_at = ?, interval_minutes = ?, daily_time = ?, timezone = ?, updated_at = NOW()
+				schedule_type = ?, run_mode = ?, run_at = ?, next_run_at = ?, interval_minutes = ?, daily_time = ?, timezone = ?, allowed_weekdays = ?, allowed_start_time = ?, allowed_end_time = ?, updated_at = NOW()
 			WHERE id = ?
 			LIMIT 1');
 		if (!$update) {
 			return ['ok' => false, 'reason' => 'update_prepare_failed'];
 		}
 		$update->bind_param(
-			'sssssssssssissi',
+			'sssssssssssisssssi',
 			$title,
 			$jobType,
 			$description,
@@ -385,6 +407,9 @@ class JobService
 			$intervalMinutes,
 			$dailyTime,
 			$timezone,
+			$allowedWeekdays,
+			$allowedStartTime,
+			$allowedEndTime,
 			$jobId
 		);
 		if (!$update->execute()) {
@@ -471,11 +496,20 @@ class JobService
 		$steps = self::getSteps($db, $jobId);
 		$messages = [];
 		$status = 'ok';
+		$blockedByWindow = false;
+		$tz = self::resolveTimezone((string)($job['timezone'] ?? 'Europe/Vienna'));
+		$nowStr = self::dbNowString($db);
+		$nowDt = self::parseDateInTz($nowStr, $tz);
+		if (!self::isAllowedNow($job, $nowDt)) {
+			$status = 'skipped';
+			$blockedByWindow = true;
+			$messages[] = 'Ausführung außerhalb erlaubter Zeitfenster/Wochentage.';
+		}
 
-		if (!$steps) {
+		if (!$blockedByWindow && !$steps) {
 			$status = 'skipped';
 			$messages[] = 'Keine Arbeitsschritte definiert.';
-		} else {
+		} elseif (!$blockedByWindow) {
 			foreach ($steps as $step) {
 				$stepType = trim((string)($step['step_type'] ?? 'note'));
 				$stepTitle = trim((string)($step['step_title'] ?? 'Schritt'));
@@ -505,6 +539,13 @@ class JobService
 							$status = 'error';
 							break;
 						}
+					} elseif ($stepType === 'run_dachser_bulk_check') {
+						$exec = self::executeDachserBulkCheck($payload);
+						$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
+						if (empty($exec['ok'])) {
+							$status = 'error';
+							break;
+						}
 					} elseif ($stepType === 'send_crm_test_email') {
 						$exec = self::executeCrmTestEmail($db, $job, $payload);
 						$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
@@ -528,8 +569,8 @@ class JobService
 		}
 
 		$newJobStatus = 'active';
-		$nextRunAt = self::computeNextRunAt($job, date('Y-m-d H:i:s'));
-		if ((string)$job['schedule_type'] === 'once') {
+		$nextRunAt = self::computeNextRunAt($job, $nowStr);
+		if (!$blockedByWindow && (string)$job['schedule_type'] === 'once') {
 			$newJobStatus = 'done';
 			$nextRunAt = null;
 		}
@@ -542,6 +583,8 @@ class JobService
 			$jobUpdate->bind_param('ssssi', $status, $resultMessage, $nextRunAt, $newJobStatus, $jobId);
 			$jobUpdate->execute();
 		}
+
+		self::sendTelegramRunNotificationIfEnabled($job, $runId, $status, $triggerType, $executedBy, $resultMessage);
 
 		return ['ok' => true, 'run_id' => $runId, 'status' => $status, 'message' => $resultMessage];
 	}
@@ -624,20 +667,32 @@ class JobService
 			return null;
 		}
 
-		$now = $baseNow !== null ? strtotime($baseNow) : time();
-		if ($now === false) {
-			$now = time();
+		$tz = self::resolveTimezone((string)($job['timezone'] ?? 'Europe/Vienna'));
+
+		if ($baseNow !== null && trim($baseNow) !== '') {
+			try {
+				$nowDt = new DateTimeImmutable($baseNow, $tz);
+			} catch (Throwable $e) {
+				$nowDt = new DateTimeImmutable('now', $tz);
+			}
+		} else {
+			$nowDt = new DateTimeImmutable('now', $tz);
 		}
 
+		$candidate = null;
 		if ($scheduleType === 'once') {
 			$runAt = trim((string)($job['run_at'] ?? ''));
 			if ($runAt !== '') {
-				$ts = strtotime($runAt);
-				if ($ts !== false) {
-					return date('Y-m-d H:i:s', $ts);
+				try {
+					$runDt = new DateTimeImmutable($runAt, $tz);
+					$candidate = $runDt;
+				} catch (Throwable $e) {
+					// fallback below
 				}
 			}
-			return date('Y-m-d H:i:s', $now);
+			if ($candidate === null) {
+				$candidate = $nowDt;
+			}
 		}
 
 		if ($scheduleType === 'interval_minutes') {
@@ -645,7 +700,7 @@ class JobService
 			if ($minutes < 1) {
 				return null;
 			}
-			return date('Y-m-d H:i:s', $now + ($minutes * 60));
+			$candidate = $nowDt->modify('+' . $minutes . ' minutes');
 		}
 
 		if ($scheduleType === 'daily_time') {
@@ -653,18 +708,25 @@ class JobService
 			if ($dailyTime === '') {
 				return null;
 			}
-			$today = date('Y-m-d', $now);
-			$ts = strtotime($today . ' ' . $dailyTime);
-			if ($ts === false) {
+			try {
+				$nextDt = new DateTimeImmutable($nowDt->format('Y-m-d') . ' ' . $dailyTime, $tz);
+			} catch (Throwable $e) {
 				return null;
 			}
-			if ($ts <= $now) {
-				$ts = strtotime('+1 day', $ts);
+			if ($nextDt <= $nowDt) {
+				$nextDt = $nextDt->modify('+1 day');
 			}
-			return date('Y-m-d H:i:s', $ts);
+			$candidate = $nextDt;
 		}
 
-		return null;
+		if (!$candidate instanceof DateTimeImmutable) {
+			return null;
+		}
+		$adjusted = self::nextAllowedDateTime($job, $candidate, $tz);
+		if (!$adjusted instanceof DateTimeImmutable) {
+			return null;
+		}
+		return $adjusted->format('Y-m-d H:i:s');
 	}
 
 	private static function getJobById(mysqli $db, int $jobId): ?array
@@ -707,6 +769,141 @@ class JobService
 			return null;
 		}
 		return date('Y-m-d H:i:s', $ts);
+	}
+
+	private static function normalizeAllowedWeekdays($value): string
+	{
+		$parts = [];
+		if (is_array($value)) {
+			$parts = $value;
+		} elseif (is_string($value)) {
+			$parts = explode(',', $value);
+		}
+		$set = [];
+		foreach ($parts as $part) {
+			$d = (int)trim((string)$part);
+			if ($d >= 1 && $d <= 7) {
+				$set[$d] = true;
+			}
+		}
+		if (!$set) {
+			return '1,2,3,4,5,6,7';
+		}
+		ksort($set);
+		return implode(',', array_keys($set));
+	}
+
+	private static function normalizeTimeValue(string $value): ?string
+	{
+		$value = trim($value);
+		if ($value === '') {
+			return null;
+		}
+		if (!preg_match('/^\d{2}:\d{2}(:\d{2})?$/', $value)) {
+			return null;
+		}
+		if (strlen($value) === 5) {
+			$value .= ':00';
+		}
+		return $value;
+	}
+
+	private static function resolveTimezone(string $tzName): DateTimeZone
+	{
+		$tzName = trim($tzName);
+		if ($tzName === '') {
+			$tzName = 'Europe/Vienna';
+		}
+		try {
+			return new DateTimeZone($tzName);
+		} catch (Throwable $e) {
+			return new DateTimeZone('Europe/Vienna');
+		}
+	}
+
+	private static function parseDateInTz(string $dateTime, DateTimeZone $tz): DateTimeImmutable
+	{
+		try {
+			return new DateTimeImmutable($dateTime, $tz);
+		} catch (Throwable $e) {
+			return new DateTimeImmutable('now', $tz);
+		}
+	}
+
+	private static function allowedWeekdaySet(array $job): array
+	{
+		$csv = self::normalizeAllowedWeekdays((string)($job['allowed_weekdays'] ?? '1,2,3,4,5,6,7'));
+		$set = [];
+		foreach (explode(',', $csv) as $v) {
+			$d = (int)$v;
+			if ($d >= 1 && $d <= 7) {
+				$set[$d] = true;
+			}
+		}
+		return $set ?: [1 => true, 2 => true, 3 => true, 4 => true, 5 => true, 6 => true, 7 => true];
+	}
+
+	private static function isAllowedNow(array $job, DateTimeImmutable $now): bool
+	{
+		$weekSet = self::allowedWeekdaySet($job);
+		$weekday = (int)$now->format('N');
+		if (!isset($weekSet[$weekday])) {
+			return false;
+		}
+		$start = self::normalizeTimeValue((string)($job['allowed_start_time'] ?? ''));
+		$end = self::normalizeTimeValue((string)($job['allowed_end_time'] ?? ''));
+		if ($start === null && $end === null) {
+			return true;
+		}
+		$timeStr = $now->format('H:i:s');
+		$startCmp = $start ?? '00:00:00';
+		$endCmp = $end ?? '23:59:59';
+		return $timeStr >= $startCmp && $timeStr <= $endCmp;
+	}
+
+	private static function nextAllowedDateTime(array $job, DateTimeImmutable $from, DateTimeZone $tz): ?DateTimeImmutable
+	{
+		$weekSet = self::allowedWeekdaySet($job);
+		$start = self::normalizeTimeValue((string)($job['allowed_start_time'] ?? ''));
+		$end = self::normalizeTimeValue((string)($job['allowed_end_time'] ?? ''));
+
+		for ($d = 0; $d <= 14; $d++) {
+			$base = $d === 0 ? $from : $from->setTime(0, 0, 0)->modify('+' . $d . ' day');
+			$weekday = (int)$base->format('N');
+			if (!isset($weekSet[$weekday])) {
+				continue;
+			}
+
+			if ($start === null && $end === null) {
+				return $base;
+			}
+
+			$day = $base->format('Y-m-d');
+			$startDt = $start !== null ? self::parseDateInTz($day . ' ' . $start, $tz) : self::parseDateInTz($day . ' 00:00:00', $tz);
+			$endDt = $end !== null ? self::parseDateInTz($day . ' ' . $end, $tz) : self::parseDateInTz($day . ' 23:59:59', $tz);
+			if ($endDt < $startDt) {
+				$endDt = $startDt;
+			}
+
+			$candidate = $base < $startDt ? $startDt : $base;
+			if ($candidate <= $endDt) {
+				return $candidate;
+			}
+		}
+		return null;
+	}
+
+	private static function dbNowString(mysqli $db): string
+	{
+		$res = $db->query('SELECT NOW() AS now_ts');
+		if ($res) {
+			$row = $res->fetch_assoc();
+			$val = trim((string)($row['now_ts'] ?? ''));
+			if ($val !== '') {
+				return $val;
+			}
+		}
+		return date('Y-m-d H:i:s');
 	}
 
 	private static function executeConvertAbToInvoice(mysqli $db, array $job, array $payload): array
@@ -931,6 +1128,15 @@ class JobService
 			$script = 'lagerheini.php';
 		}
 		return self::executePhpScript($script, $payload, 'Lagerheini');
+	}
+
+	private static function executeDachserBulkCheck(array $payload): array
+	{
+		$script = trim((string)($payload['script'] ?? ''));
+		if ($script === '') {
+			$script = 'bin/dachser_bulk_check.php';
+		}
+		return self::executePhpScript($script, $payload, 'Dachser Bulk-Check');
 	}
 
 	private static function executePhpScript(string $scriptRelative, array $payload, string $label): array
@@ -1307,6 +1513,86 @@ class JobService
 			}
 		}
 
+		$dachserKey = 'system:dachser_open_hourly';
+		$dachserJobId = 0;
+		$dachserSel = $db->prepare('SELECT id FROM mw_jobs WHERE job_key = ? LIMIT 1');
+		if (!$dachserSel) {
+			return false;
+		}
+		$dachserSel->bind_param('s', $dachserKey);
+		if (!$dachserSel->execute()) {
+			return false;
+		}
+		$dachserRes = $dachserSel->get_result();
+		if ($row = $dachserRes->fetch_assoc()) {
+			$dachserJobId = (int)($row['id'] ?? 0);
+		}
+
+		if ($dachserJobId <= 0) {
+			$payloadJson = json_encode(['source' => 'system', 'script' => 'bin/dachser_bulk_check.php'], JSON_UNESCAPED_SLASHES);
+			$ins = $db->prepare('INSERT INTO mw_jobs
+				(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, interval_minutes, daily_time, timezone, status, created_at, updated_at)
+				VALUES (?, "Dachser API Check (offen)", "system", "Prüft stündlich alle offenen Aufträge mit AT-Nummer und Status != Zugestellt.", "none", NULL, NULL, ?, "interval_minutes", "auto", NOW(), NOW(), 60, NULL, "Europe/Vienna", "active", NOW(), NOW())');
+			if (!$ins) {
+				return false;
+			}
+			$ins->bind_param('ss', $dachserKey, $payloadJson);
+			if (!$ins->execute()) {
+				return false;
+			}
+			$dachserJobId = (int)$db->insert_id;
+		}
+
+		$dachserStepSel = $db->prepare('SELECT id FROM mw_job_steps WHERE job_id = ? AND step_type = "run_dachser_bulk_check" LIMIT 1');
+		if (!$dachserStepSel) {
+			return false;
+		}
+		$dachserStepSel->bind_param('i', $dachserJobId);
+		if (!$dachserStepSel->execute()) {
+			return false;
+		}
+		$dachserStepRes = $dachserStepSel->get_result();
+		if (!$dachserStepRes->fetch_assoc()) {
+			$stepPayloadJson = json_encode(['script' => 'bin/dachser_bulk_check.php'], JSON_UNESCAPED_SLASHES);
+			$stepIns = $db->prepare('INSERT INTO mw_job_steps
+				(job_id, step_order, step_title, step_type, step_payload_json, due_at, is_required, created_at, updated_at)
+				VALUES (?, 1, "Offene AT-Status prüfen", "run_dachser_bulk_check", ?, NULL, 1, NOW(), NOW())');
+			if (!$stepIns) {
+				return false;
+			}
+			$stepIns->bind_param('is', $dachserJobId, $stepPayloadJson);
+			if (!$stepIns->execute()) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static function ensureJobColumns(mysqli $db): bool
+	{
+		$columns = [
+			'allowed_weekdays' => "ALTER TABLE mw_jobs ADD COLUMN allowed_weekdays VARCHAR(32) NOT NULL DEFAULT '1,2,3,4,5,6,7' AFTER timezone",
+			'allowed_start_time' => "ALTER TABLE mw_jobs ADD COLUMN allowed_start_time TIME NULL AFTER allowed_weekdays",
+			'allowed_end_time' => "ALTER TABLE mw_jobs ADD COLUMN allowed_end_time TIME NULL AFTER allowed_start_time",
+		];
+		foreach ($columns as $name => $alterSql) {
+			$chk = $db->prepare('SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = "mw_jobs" AND COLUMN_NAME = ? LIMIT 1');
+			if (!$chk) {
+				return false;
+			}
+			$chk->bind_param('s', $name);
+			if (!$chk->execute()) {
+				return false;
+			}
+			$res = $chk->get_result();
+			$row = $res ? $res->fetch_row() : null;
+			if (!$row) {
+				if (!$db->query($alterSql)) {
+					return false;
+				}
+			}
+		}
 		return true;
 	}
 
@@ -1316,5 +1602,118 @@ class JobService
 		$data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
 		$data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
 		return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+	}
+
+	private static function sendTelegramRunNotificationIfEnabled(array $job, int $runId, string $status, string $triggerType, string $executedBy, string $resultMessage): void
+	{
+		$payload = json_decode((string)($job['payload_json'] ?? ''), true);
+		if (!is_array($payload) || empty($payload['notify_telegram'])) {
+			return;
+		}
+
+		self::ensureDotEnvLoaded();
+		$botToken = trim((string)(getenv('TG_BOT_TOKEN') ?: getenv('TELEGRAM_BOT_TOKEN') ?: ''));
+		$chatId = trim((string)(getenv('TG_CHAT_ID') ?: getenv('TELEGRAM_CHAT_ID') ?: ''));
+		if ($botToken === '' || $chatId === '') {
+			return;
+		}
+
+		$title = trim((string)($job['title'] ?? 'Job'));
+		$jobId = (int)($job['id'] ?? 0);
+		$statusIcon = 'ℹ️';
+		if ($status === 'ok') {
+			$statusIcon = '✅';
+		} elseif ($status === 'error') {
+			$statusIcon = '❌';
+		} elseif ($status === 'skipped') {
+			$statusIcon = '⏭️';
+		}
+
+		$resultShort = trim($resultMessage);
+		if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+			if (mb_strlen($resultShort, 'UTF-8') > 1200) {
+				$resultShort = mb_substr($resultShort, 0, 1200, 'UTF-8') . '...';
+			}
+		} elseif (strlen($resultShort) > 1200) {
+			$resultShort = substr($resultShort, 0, 1200) . '...';
+		}
+
+		$message = $statusIcon . " Job-Run\n"
+			. 'Job: #' . $jobId . ' ' . $title . "\n"
+			. 'Run: #' . $runId . ' | Trigger: ' . $triggerType . ' | By: ' . $executedBy . "\n"
+			. 'Status: ' . $status . "\n"
+			. 'Zeit: ' . date('Y-m-d H:i:s') . "\n\n"
+			. 'Ergebnis:' . "\n" . $resultShort;
+
+		self::sendTelegramMessage($botToken, $chatId, $message);
+	}
+
+	private static function sendTelegramMessage(string $botToken, string $chatId, string $message): bool
+	{
+		$url = 'https://api.telegram.org/bot' . rawurlencode($botToken) . '/sendMessage';
+		$payload = http_build_query([
+			'chat_id' => $chatId,
+			'text' => $message,
+			'disable_web_page_preview' => 'true',
+		], '', '&');
+
+		$opts = [
+			'http' => [
+				'method' => 'POST',
+				'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+				'content' => $payload,
+				'timeout' => 15,
+			],
+		];
+		$ctx = stream_context_create($opts);
+		$res = @file_get_contents($url, false, $ctx);
+		if ($res === false) {
+			return false;
+		}
+		$decoded = json_decode((string)$res, true);
+		return is_array($decoded) && !empty($decoded['ok']);
+	}
+
+	private static function ensureDotEnvLoaded(): void
+	{
+		if (self::$envLoaded) {
+			return;
+		}
+		self::$envLoaded = true;
+
+		$envPath = realpath(__DIR__ . '/../.env');
+		if ($envPath === false || !is_file($envPath) || !is_readable($envPath)) {
+			return;
+		}
+
+		$lines = @file($envPath, FILE_IGNORE_NEW_LINES);
+		if (!is_array($lines)) {
+			return;
+		}
+
+		foreach ($lines as $line) {
+			$line = trim((string)$line);
+			if ($line === '' || $line[0] === '#') {
+				continue;
+			}
+			$eq = strpos($line, '=');
+			if ($eq === false) {
+				continue;
+			}
+			$key = trim(substr($line, 0, $eq));
+			$val = trim(substr($line, $eq + 1));
+			if ($key === '') {
+				continue;
+			}
+			if ((str_starts_with($val, '"') && str_ends_with($val, '"')) || (str_starts_with($val, "'") && str_ends_with($val, "'"))) {
+				$val = substr($val, 1, -1);
+			}
+			if (getenv($key) !== false && getenv($key) !== '') {
+				continue;
+			}
+			putenv($key . '=' . $val);
+			$_ENV[$key] = $val;
+			$_SERVER[$key] = $val;
+		}
 	}
 }

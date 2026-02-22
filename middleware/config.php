@@ -1,7 +1,52 @@
 <?php
 
+function mw_cfg_load_dotenv_once(): void
+{
+	static $loaded = false;
+	if ($loaded) {
+		return;
+	}
+	$loaded = true;
+
+	$envPath = realpath(__DIR__ . '/../.env');
+	if ($envPath === false || !is_file($envPath) || !is_readable($envPath)) {
+		return;
+	}
+
+	$lines = @file($envPath, FILE_IGNORE_NEW_LINES);
+	if (!is_array($lines)) {
+		return;
+	}
+
+	foreach ($lines as $line) {
+		$line = trim((string)$line);
+		if ($line === '' || $line[0] === '#') {
+			continue;
+		}
+		$eq = strpos($line, '=');
+		if ($eq === false) {
+			continue;
+		}
+		$key = trim(substr($line, 0, $eq));
+		$val = trim(substr($line, $eq + 1));
+		if ($key === '') {
+			continue;
+		}
+		if ((str_starts_with($val, '"') && str_ends_with($val, '"')) || (str_starts_with($val, "'") && str_ends_with($val, "'"))) {
+			$val = substr($val, 1, -1);
+		}
+		if (getenv($key) !== false && getenv($key) !== '') {
+			continue;
+		}
+		putenv($key . '=' . $val);
+		$_ENV[$key] = $val;
+		$_SERVER[$key] = $val;
+	}
+}
+
 function mw_cfg_env(string $key, string $default = ''): string
 {
+	mw_cfg_load_dotenv_once();
 	$val = getenv($key);
 	if ($val === false || $val === '') {
 		return $default;

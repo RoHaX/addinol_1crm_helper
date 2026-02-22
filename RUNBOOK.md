@@ -41,6 +41,7 @@ JOB_LIMIT=50 /opt/plesk/php/8.3/bin/php bin/jobs_worker.php
 
 Hinweis:
 - Mail-Polling läuft als System-Job (`Mail Poller`) im `jobs_worker` (Intervall 5 Minuten).
+- Dachser-Bulkcheck läuft als System-Job (`Dachser API Check (offen)`) im `jobs_worker` (Intervall 60 Minuten).
 - Kein separater Poll-Cron nötig.
 
 ## Cron Vorschlag
@@ -69,6 +70,9 @@ Plesk-Hinweis:
   - `logs/mw-YYYY-MM-DD.log`
 - Job-Worker:
   - `logs/jobs_worker.log`
+- Poll-Summary:
+  - `bin/poll.php` schreibt `Poll summary: new=..., imported=..., pending=...`
+  - Diese Zeile ist im jeweiligen Run-Ergebnis in `middleware/jobs.php` sichtbar.
 
 ## Job-Flow (Zugestellt)
 
@@ -77,6 +81,16 @@ Plesk-Hinweis:
 3. Cron führt `bin/jobs_worker.php` aus.
 4. Job-Step `AB in Rechnung umwandeln` erstellt Rechnung oder meldet idempotent "Rechnung existiert bereits".
 5. Ergebnisse sind sichtbar in `middleware/jobs.php` und in `mw_job_runs`.
+
+## Job-Flow (Stündlicher Dachser-Check)
+
+1. System-Job `Dachser API Check (offen)` läuft stündlich über `bin/jobs_worker.php`.
+2. Step `run_dachser_bulk_check` startet `bin/dachser_bulk_check.php`.
+3. Das Script ruft pro offenem Datensatz (`AT vorhanden`, `Status != Zugestellt`, `Auftrag offen`) `middleware/dachser_status.php` auf.
+4. Bei Statuswechsel auf `Zugestellt` wird automatisch der Folge-Job `Ware zugestellt` erstellt.
+
+Hinweis:
+- `middleware/dachser_status.php` unterstützt dafür auch CLI-Input über `php://stdin` (Fallback zu `php://input`).
 
 ## Troubleshooting
 
