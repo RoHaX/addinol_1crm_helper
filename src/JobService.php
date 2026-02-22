@@ -154,7 +154,7 @@ class JobService
 
 		$insert = $db->prepare('INSERT INTO mw_jobs
 			(job_key, title, job_type, description, relation_type, relation_id, account_id, payload_json, schedule_type, run_mode, run_at, next_run_at, status, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?, "once", "manual", NOW(), NOW(), "active", NOW(), NOW())');
+			VALUES (?,?,?,?,?,?,?,?, "once", "auto", NOW(), NOW(), "active", NOW(), NOW())');
 		if (!$insert) {
 			return ['ok' => false, 'created' => false, 'reason' => 'insert_prepare_failed'];
 		}
@@ -371,16 +371,12 @@ class JobService
 				}
 
 				if ($stepType === 'convert_ab_to_invoice') {
-					$abNo = trim((string)($payload['ab_order_no'] ?? ''));
-					$salesOrderId = trim((string)($payload['sales_order_id'] ?? ''));
-					$msg = 'Manuell ausführen: AB in Rechnung umwandeln';
-					if ($abNo !== '') {
-						$msg .= ' (' . $abNo . ')';
+					$exec = self::executeConvertAbToInvoice($db, $job, $payload);
+					$messages[] = $stepTitle . ': ' . (string)($exec['message'] ?? 'ohne Meldung');
+					if (empty($exec['ok'])) {
+						$status = 'error';
+						break;
 					}
-					if ($salesOrderId !== '') {
-						$msg .= ' [SalesOrder-ID: ' . $salesOrderId . ']';
-					}
-					$messages[] = $stepTitle . ': ' . $msg;
 				} else {
 					$messages[] = $stepTitle . ': als erledigt markiert.';
 				}
@@ -576,5 +572,219 @@ class JobService
 			return null;
 		}
 		return date('Y-m-d H:i:s', $ts);
+	}
+
+	private static function executeConvertAbToInvoice(mysqli $db, array $job, array $payload): array
+	{
+		$salesOrderId = trim((string)($payload['sales_order_id'] ?? ''));
+		if ($salesOrderId === '' && ((string)($job['relation_type'] ?? '') === 'sales_order')) {
+			$salesOrderId = trim((string)($job['relation_id'] ?? ''));
+		}
+		if ($salesOrderId === '') {
+			$purchaseOrderId = trim((string)($payload['purchase_order_id'] ?? ''));
+			if ($purchaseOrderId !== '') {
+				$stmtSo = $db->prepare('SELECT from_so_id FROM purchase_orders WHERE id = ? AND deleted = 0 LIMIT 1');
+				if ($stmtSo) {
+					$stmtSo->bind_param('s', $purchaseOrderId);
+					$stmtSo->execute();
+					$resSo = $stmtSo->get_result();
+					if ($rowSo = $resSo->fetch_assoc()) {
+						$salesOrderId = trim((string)($rowSo['from_so_id'] ?? ''));
+					}
+				}
+			}
+		}
+		if ($salesOrderId === '') {
+			return ['ok' => false, 'message' => 'SalesOrder-ID fehlt.'];
+		}
+
+		$soStmt = $db->prepare('SELECT * FROM sales_orders WHERE id = ? AND deleted = 0 LIMIT 1');
+		if (!$soStmt) {
+			return ['ok' => false, 'message' => 'SalesOrder konnte nicht vorbereitet werden.'];
+		}
+		$soStmt->bind_param('s', $salesOrderId);
+		$soStmt->execute();
+		$soRes = $soStmt->get_result();
+		$salesOrder = $soRes->fetch_assoc();
+		if (!$salesOrder) {
+			return ['ok' => false, 'message' => 'SalesOrder nicht gefunden: ' . $salesOrderId];
+		}
+
+		$existingInvStmt = $db->prepare('SELECT id, prefix, invoice_number FROM invoice WHERE from_so_id = ? AND deleted = 0 ORDER BY date_entered DESC LIMIT 1');
+		if ($existingInvStmt) {
+			$existingInvStmt->bind_param('s', $salesOrderId);
+			$existingInvStmt->execute();
+			$existingInvRes = $existingInvStmt->get_result();
+			if ($existingInv = $existingInvRes->fetch_assoc()) {
+				$invNo = trim((string)($existingInv['prefix'] ?? '') . (string)($existingInv['invoice_number'] ?? ''));
+				return ['ok' => true, 'message' => 'Rechnung existiert bereits: ' . $invNo, 'invoice_id' => (string)$existingInv['id']];
+			}
+		}
+
+		$invoicePrefix = 'RE' . date('Y') . '-';
+		$invoiceNumber = 0;
+		$invoiceId = self::generateGuid();
+		$now = date('Y-m-d H:i:s');
+		$today = date('Y-m-d');
+		$esc = static function ($v) use ($db): string {
+			if ($v === null) {
+				return 'NULL';
+			}
+			return "'" . $db->real_escape_string((string)$v) . "'";
+		};
+		$num = static function ($v): string {
+			if ($v === null || $v === '') {
+				return 'NULL';
+			}
+			return (string)(0 + $v);
+		};
+		$intVal = static function ($v): int {
+			return (int)(is_numeric($v) ? $v : 0);
+		};
+
+		$db->begin_transaction();
+		try {
+			$numStmt = $db->prepare('SELECT COALESCE(MAX(invoice_number), 0) AS max_no FROM invoice WHERE prefix = ? FOR UPDATE');
+			if (!$numStmt) {
+				throw new RuntimeException('invoice number lock failed');
+			}
+			$numStmt->bind_param('s', $invoicePrefix);
+			$numStmt->execute();
+			$numRes = $numStmt->get_result();
+			$numRow = $numRes->fetch_assoc();
+			$invoiceNumber = (int)($numRow['max_no'] ?? 0) + 1;
+
+			$dueDate = trim((string)($salesOrder['due_date'] ?? ''));
+			if ($dueDate === '' || $dueDate === '0000-00-00') {
+				$dueDate = $today;
+			}
+
+			$insertInvoiceSql = "INSERT INTO invoice (
+				id, date_entered, date_modified, modified_user_id, assigned_user_id, created_by, deleted,
+				currency_id, exchange_rate, prefix, invoice_number, from_so_id, shipping_stage, cancelled, products_created,
+				name, opportunity_id, purchase_order_num, invoice_date, due_date, partner_id, billing_account_id, billing_contact_id,
+				billing_address_street, billing_address_city, billing_address_state, billing_address_postalcode, billing_address_country,
+				shipping_account_id, shipping_contact_id, shipping_address_street, shipping_address_city, shipping_address_state,
+				shipping_address_postalcode, shipping_address_country, shipping_provider_id, description,
+				amount, amount_usdollar, amount_due, amount_due_usdollar,
+				gross_profit, gross_profit_usdollar, subtotal, subtotal_usd, pretax, pretax_usd,
+				terms, tax_information, show_components, tax_exempt, discount_before_taxes, pricebook_id,
+				billing_address_statecode, billing_address_countrycode, shipping_address_statecode, shipping_address_countrycode,
+				net_amount, net_amount_usdollar
+			) VALUES (
+				" . $esc($invoiceId) . ", " . $esc($now) . ", " . $esc($now) . ", " . $esc($salesOrder['modified_user_id'] ?? null) . ", " . $esc($salesOrder['assigned_user_id'] ?? null) . ", " . $esc($salesOrder['created_by'] ?? null) . ", 0,
+				" . $esc($salesOrder['currency_id'] ?? '-99') . ", " . $num($salesOrder['exchange_rate'] ?? 1) . ", " . $esc($invoicePrefix) . ", " . $invoiceNumber . ", " . $esc($salesOrderId) . ", " . $esc($salesOrder['so_stage'] ?? 'Pending') . ", 0, 0,
+				" . $esc($salesOrder['name'] ?? '') . ", " . $esc($salesOrder['opportunity_id'] ?? null) . ", " . $esc($salesOrder['purchase_order_num'] ?? null) . ", " . $esc($today) . ", " . $esc($dueDate) . ", " . $esc($salesOrder['partner_id'] ?? null) . ", " . $esc($salesOrder['billing_account_id'] ?? null) . ", " . $esc($salesOrder['billing_contact_id'] ?? null) . ",
+				" . $esc($salesOrder['billing_address_street'] ?? null) . ", " . $esc($salesOrder['billing_address_city'] ?? null) . ", " . $esc($salesOrder['billing_address_state'] ?? null) . ", " . $esc($salesOrder['billing_address_postalcode'] ?? null) . ", " . $esc($salesOrder['billing_address_country'] ?? null) . ",
+				" . $esc($salesOrder['shipping_account_id'] ?? null) . ", " . $esc($salesOrder['shipping_contact_id'] ?? null) . ", " . $esc($salesOrder['shipping_address_street'] ?? null) . ", " . $esc($salesOrder['shipping_address_city'] ?? null) . ", " . $esc($salesOrder['shipping_address_state'] ?? null) . ",
+				" . $esc($salesOrder['shipping_address_postalcode'] ?? null) . ", " . $esc($salesOrder['shipping_address_country'] ?? null) . ", " . $esc($salesOrder['shipping_provider_id'] ?? null) . ", " . $esc($salesOrder['description'] ?? null) . ",
+				" . $num($salesOrder['amount'] ?? 0) . ", " . $num($salesOrder['amount_usdollar'] ?? 0) . ", " . $num($salesOrder['amount'] ?? 0) . ", " . $num($salesOrder['amount_usdollar'] ?? 0) . ",
+				" . $num($salesOrder['gross_profit_so'] ?? 0) . ", " . $num($salesOrder['gross_profit_so_usd'] ?? 0) . ", " . $num($salesOrder['subtotal'] ?? 0) . ", " . $num($salesOrder['subtotal_usd'] ?? 0) . ", " . $num($salesOrder['pretax'] ?? 0) . ", " . $num($salesOrder['pretax_usd'] ?? 0) . ",
+				" . $esc($salesOrder['terms'] ?? '') . ", " . $esc($salesOrder['tax_information'] ?? null) . ", " . $esc($salesOrder['show_components'] ?? '') . ", " . $intVal($salesOrder['tax_exempt'] ?? 0) . ", " . $intVal($salesOrder['discount_before_taxes'] ?? 0) . ", " . $esc($salesOrder['pricebook_id'] ?? null) . ",
+				" . $esc($salesOrder['billing_address_statecode'] ?? null) . ", " . $esc($salesOrder['billing_address_countrycode'] ?? null) . ", " . $esc($salesOrder['shipping_address_statecode'] ?? null) . ", " . $esc($salesOrder['shipping_address_countrycode'] ?? null) . ",
+				" . $num($salesOrder['pretax'] ?? 0) . ", " . $num($salesOrder['pretax_usd'] ?? 0) . "
+			)";
+			if (!$db->query($insertInvoiceSql)) {
+				throw new RuntimeException('invoice insert failed: ' . $db->error);
+			}
+
+			$groupMap = [];
+				$groupsStmt = $db->prepare('SELECT * FROM sales_order_line_groups WHERE parent_id = ? AND deleted = 0 ORDER BY position ASC, id ASC');
+				if ($groupsStmt) {
+					$groupsStmt->bind_param('s', $salesOrderId);
+					$groupsStmt->execute();
+					$groupsRes = $groupsStmt->get_result();
+					while ($g = $groupsRes->fetch_assoc()) {
+					$newGroupId = self::generateGuid();
+					$insertGroupSql = "INSERT INTO invoice_line_groups
+						(id, date_entered, date_modified, deleted, parent_id, name, position, status, pricing_method, pricing_percentage, cost, cost_usd, subtotal, subtotal_usd, total, total_usd, group_type)
+						VALUES (
+							" . $esc($newGroupId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ",
+							" . $esc($g['name'] ?? null) . ", " . $num($g['position'] ?? null) . ", " . $esc($g['status'] ?? null) . ", " . $esc($g['pricing_method'] ?? null) . ",
+							" . $num($g['pricing_percentage'] ?? null) . ", " . $num($g['cost'] ?? null) . ", " . $num($g['cost_usd'] ?? null) . ", " . $num($g['subtotal'] ?? null) . ", " . $num($g['subtotal_usd'] ?? null) . ", " . $num($g['total'] ?? null) . ", " . $num($g['total_usd'] ?? null) . ", " . $esc($g['group_type'] ?? 'products') . "
+						)";
+					if (!$db->query($insertGroupSql)) {
+						throw new RuntimeException('group insert failed: ' . $db->error);
+					}
+					$groupMap[(string)$g['id']] = $newGroupId;
+				}
+			}
+
+			$lineMap = [];
+				$linesStmt = $db->prepare('SELECT * FROM sales_order_lines WHERE sales_orders_id = ? AND deleted = 0 ORDER BY line_group_id ASC, position ASC, id ASC');
+				if ($linesStmt) {
+					$linesStmt->bind_param('s', $salesOrderId);
+					$linesStmt->execute();
+					$linesRes = $linesStmt->get_result();
+					while ($l = $linesRes->fetch_assoc()) {
+					$newLineId = self::generateGuid();
+					$oldGroupId = (string)($l['line_group_id'] ?? '');
+					$newGroupId = $groupMap[$oldGroupId] ?? $oldGroupId;
+					$insertLineSql = "INSERT INTO invoice_lines
+						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, pricing_adjust_id, name, position, parent_id, quantity, ext_quantity, related_type, related_id, mfr_part_no, serial_no, serial_numbers, tax_class_id, sum_of_components, cost_price, cost_price_usd, list_price, list_price_usd, unit_price, unit_price_usd, std_unit_price, std_unit_price_usd, ext_price, ext_price_usd, net_price, net_price_usd)
+						VALUES (
+							" . $esc($newLineId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ", " . $esc($newGroupId) . ", " . $esc($l['pricing_adjust_id'] ?? null) . ",
+							" . $esc($l['name'] ?? null) . ", " . $num($l['position'] ?? null) . ", " . $esc($l['parent_id'] ?? null) . ", " . $num($l['quantity'] ?? null) . ", " . $num($l['ext_quantity'] ?? null) . ",
+							" . $esc($l['related_type'] ?? null) . ", " . $esc($l['related_id'] ?? null) . ", " . $esc($l['mfr_part_no'] ?? null) . ", " . $esc($l['serial_no'] ?? null) . ", " . $esc($l['serial_numbers'] ?? null) . ", " . $esc($l['tax_class_id'] ?? null) . ",
+							" . $intVal($l['sum_of_components'] ?? 0) . ", " . $num($l['cost_price'] ?? null) . ", " . $num($l['cost_price_usd'] ?? null) . ", " . $num($l['list_price'] ?? null) . ", " . $num($l['list_price_usd'] ?? null) . ", " . $num($l['unit_price'] ?? null) . ", " . $num($l['unit_price_usd'] ?? null) . ",
+							" . $num($l['std_unit_price'] ?? null) . ", " . $num($l['std_unit_price_usd'] ?? null) . ", " . $num($l['ext_price'] ?? null) . ", " . $num($l['ext_price_usd'] ?? null) . ", " . $num($l['net_price'] ?? null) . ", " . $num($l['net_price_usd'] ?? null) . "
+						)";
+					if (!$db->query($insertLineSql)) {
+						throw new RuntimeException('line insert failed: ' . $db->error);
+					}
+					$lineMap[(string)$l['id']] = $newLineId;
+				}
+			}
+
+				$adjStmt = $db->prepare('SELECT * FROM sales_order_adjustments WHERE sales_orders_id = ? AND deleted = 0 ORDER BY line_group_id ASC, position ASC, id ASC');
+				if ($adjStmt) {
+					$adjStmt->bind_param('s', $salesOrderId);
+					$adjStmt->execute();
+					$adjRes = $adjStmt->get_result();
+					while ($a = $adjRes->fetch_assoc()) {
+					$newAdjId = self::generateGuid();
+					$oldGroupId = (string)($a['line_group_id'] ?? '');
+					$newGroupId = $groupMap[$oldGroupId] ?? $oldGroupId;
+					$oldLineId = trim((string)($a['line_id'] ?? ''));
+					$newLineId = $oldLineId !== '' ? ($lineMap[$oldLineId] ?? null) : null;
+					$insertAdjSql = "INSERT INTO invoice_adjustments
+						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, line_id, name, position, related_type, related_id, rate, type, amount, amount_usd, tax_class_id)
+						VALUES (
+							" . $esc($newAdjId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ", " . $esc($newGroupId) . ", " . $esc($newLineId) . ",
+							" . $esc($a['name'] ?? null) . ", " . $num($a['position'] ?? null) . ", " . $esc($a['related_type'] ?? null) . ", " . $esc($a['related_id'] ?? null) . ", " . $num($a['rate'] ?? null) . ", " . $esc($a['type'] ?? null) . ", " . $num($a['amount'] ?? null) . ", " . $num($a['amount_usd'] ?? null) . ", " . $esc($a['tax_class_id'] ?? null) . "
+						)";
+					if (!$db->query($insertAdjSql)) {
+						throw new RuntimeException('adjustment insert failed: ' . $db->error);
+					}
+				}
+			}
+
+			$soStage = 'Closed - Shipped and Invoiced';
+			$updSo = $db->prepare('UPDATE sales_orders SET so_stage = ?, date_modified = ?, modified_user_id = ? WHERE id = ? AND deleted = 0 LIMIT 1');
+			if ($updSo) {
+				$updSo->bind_param('ssss', $soStage, $now, $salesOrder['modified_user_id'], $salesOrderId);
+				$updSo->execute();
+			}
+
+			$db->commit();
+		} catch (Throwable $e) {
+			$db->rollback();
+			return ['ok' => false, 'message' => 'AB->Rechnung fehlgeschlagen: ' . $e->getMessage()];
+		}
+
+		return [
+			'ok' => true,
+			'message' => 'Rechnung erstellt: ' . $invoicePrefix . $invoiceNumber,
+			'invoice_id' => $invoiceId,
+			'invoice_number' => $invoicePrefix . $invoiceNumber,
+		];
+	}
+
+	private static function generateGuid(): string
+	{
+		$data = random_bytes(16);
+		$data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
+		$data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
+		return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
 	}
 }

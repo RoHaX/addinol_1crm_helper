@@ -2,7 +2,7 @@
 
 ## Ziel
 
-Betriebsanleitung für Lieferstatus-, Referenz-Extraktion und Dachser-Parsing.
+Betriebsanleitung für Lieferstatus-, Referenz-Extraktion, Dachser-Parsing und Job-Automation.
 
 ## Daily Workflow (Lieferstatus)
 
@@ -29,6 +29,32 @@ Gezielt pro Bestellung:
 FORCE_RECHECK=1 TARGET_PO_ID=<purchase-order-id> LIMIT=120 /opt/plesk/php/8.3/bin/php bin/extract_addinol_refs.php
 ```
 
+Job-Worker (Auto-Jobs):
+```bash
+/opt/plesk/php/8.3/bin/php bin/jobs_worker.php
+```
+
+Job-Worker mit Limit:
+```bash
+JOB_LIMIT=50 /opt/plesk/php/8.3/bin/php bin/jobs_worker.php
+```
+
+## Cron Vorschlag
+
+```cron
+*/1 * * * * /opt/plesk/php/8.3/bin/php /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/bin/jobs_worker.php >> /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/logs/jobs_worker.log 2>&1
+```
+
+Optional (falls weniger Frequenz gewünscht):
+
+```cron
+*/2 * * * * /opt/plesk/php/8.3/bin/php /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/bin/jobs_worker.php >> /var/www/vhosts/addinol-lubeoil.at/httpdocs/crm/roman/logs/jobs_worker.log 2>&1
+```
+
+Plesk-Hinweis:
+- Redirects (`>> ... 2>&1`) dürfen nicht als gequotete Argumente (`'>>'`, `'2>&1'`) eingetragen werden.
+- Kein `--` vor den Redirects setzen.
+
 ## Monitoring / Logs
 
 - Laufstatus Extraktion:
@@ -37,6 +63,16 @@ FORCE_RECHECK=1 TARGET_PO_ID=<purchase-order-id> LIMIT=120 /opt/plesk/php/8.3/bi
   - `logs/extract_addinol_refs.log`
 - Middleware-Events:
   - `logs/mw-YYYY-MM-DD.log`
+- Job-Worker:
+  - `logs/jobs_worker.log`
+
+## Job-Flow (Zugestellt)
+
+1. In `middleware/lieferstatus.php` auf `API` klicken.
+2. Wenn Dachser-Status auf `Zugestellt` wechselt, wird automatisch Job `Ware zugestellt` erstellt.
+3. Cron führt `bin/jobs_worker.php` aus.
+4. Job-Step `AB in Rechnung umwandeln` erstellt Rechnung oder meldet idempotent "Rechnung existiert bereits".
+5. Ergebnisse sind sichtbar in `middleware/jobs.php` und in `mw_job_runs`.
 
 ## Troubleshooting
 

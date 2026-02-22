@@ -33,3 +33,31 @@
 
 - Status-Parsing wurde geschärft: `dachser_status` enthält nur den eigentlichen Status.
 - Bestehende alte/falsch zusammengesetzte Werte werden erst beim nächsten `API`-Check je Datensatz überschrieben.
+
+## 2026-02-22
+
+### Jobs / ToDos
+
+- Neue Job-Engine eingeführt:
+  - `mw_jobs`
+  - `mw_job_steps`
+  - `mw_job_runs`
+- Neue UI: `middleware/jobs.php` (Job anlegen, manuell starten, pausieren/aktivieren, letzte Runs sehen).
+- Neuer Worker: `bin/jobs_worker.php` (Auto-Jobs per Cron).
+
+### Event-Integration Dachser
+
+- `middleware/dachser_status.php` erweitert:
+  - erkennt Statuswechsel auf `Zugestellt`,
+  - erstellt idempotent Job `Ware zugestellt` mit Schritt `AB in Rechnung umwandeln`.
+
+### AB -> Rechnung
+
+- `src/JobService.php` erweitert um echten Schritt `convert_ab_to_invoice`:
+  - Idempotenzprüfung über `invoice.from_so_id`.
+  - Anlage von `invoice` aus `sales_orders`.
+  - Kopie von Gruppen/Zeilen/Adjustments:
+    - `sales_order_line_groups` -> `invoice_line_groups`
+    - `sales_order_lines` -> `invoice_lines`
+    - `sales_order_adjustments` -> `invoice_adjustments`
+  - Setzt AB-Status auf `Closed - Shipped and Invoiced`.
