@@ -41,6 +41,12 @@ $insert = $db->prepare("INSERT INTO mw_tracked_mail (mailbox, uid, message_id, m
 $update = $db->prepare('UPDATE mw_tracked_mail SET message_id = ?, message_hash = ?, date = ?, from_addr = ?, subject = ?, status = "new", updated_at = NOW() WHERE id = ?');
 $updateImported = $db->prepare('UPDATE mw_tracked_mail SET status = "imported", crm_email_id = ?, last_error = NULL, updated_at = NOW() WHERE id = ?');
 $updatePending = $db->prepare('UPDATE mw_tracked_mail SET status = "pending_import", last_error = NULL, updated_at = NOW() WHERE id = ?');
+$extractScript = realpath(__DIR__ . '/extract_addinol_refs.php');
+$extractPhpBin = resolve_extract_php_binary();
+$extractLogFile = realpath(__DIR__ . '/../logs') ?: (__DIR__ . '/../logs');
+$extractLogFile = rtrim($extractLogFile, '/') . '/extract_addinol_refs.log';
+$extractEnabled = is_string($extractScript) && $extractScript !== '' && is_file($extractScript);
+$autoExtractSeenEmails = [];
 
 $stats = [
 	'mailboxes' => count($mailboxes),
@@ -53,6 +59,9 @@ $stats = [
 	'skipped_duplicate' => 0,
 	'mail_errors' => 0,
 	'mailbox_errors' => 0,
+	'auto_extract_triggered' => 0,
+	'auto_extract_skipped' => 0,
+	'auto_extract_error' => 0,
 ];
 
 foreach ($mailboxes as $mailbox) {
@@ -125,6 +134,14 @@ foreach ($mailboxes as $mailbox) {
 							if ($updateImported->affected_rows > 0) {
 								$stats['marked_imported']++;
 							}
+							$extractResult = maybe_trigger_invoice_extract_for_email($db, $logger, $crmId, (string)$subject, (string)$fromAddr, $extractEnabled, (string)$extractScript, $extractPhpBin, $extractLogFile, $autoExtractSeenEmails);
+							if ($extractResult === 'triggered') {
+								$stats['auto_extract_triggered']++;
+							} elseif ($extractResult === 'error') {
+								$stats['auto_extract_error']++;
+							} else {
+								$stats['auto_extract_skipped']++;
+							}
 						} else {
 							$updatePending->bind_param('i', $existingId);
 							$updatePending->execute();
@@ -147,6 +164,14 @@ foreach ($mailboxes as $mailbox) {
 						$updateImported->execute();
 						if ($updateImported->affected_rows > 0) {
 							$stats['marked_imported']++;
+						}
+						$extractResult = maybe_trigger_invoice_extract_for_email($db, $logger, $crmId, (string)$subject, (string)$fromAddr, $extractEnabled, (string)$extractScript, $extractPhpBin, $extractLogFile, $autoExtractSeenEmails);
+						if ($extractResult === 'triggered') {
+							$stats['auto_extract_triggered']++;
+						} elseif ($extractResult === 'error') {
+							$stats['auto_extract_error']++;
+						} else {
+							$stats['auto_extract_skipped']++;
 						}
 					} else {
 						$updatePending->bind_param('i', $newId);
@@ -175,7 +200,7 @@ foreach ($mailboxes as $mailbox) {
 clear_imap_runtime_messages();
 
 $summary = sprintf(
-	'Poll summary: lookback_days=%d, new=%d, imported=%d, pending=%d, scanned=%d, skipped_old=%d, skipped_duplicate=%d, mail_errors=%d, mailbox_errors=%d',
+	'Poll summary: lookback_days=%d, new=%d, imported=%d, pending=%d, scanned=%d, skipped_old=%d, skipped_duplicate=%d, auto_extract_triggered=%d, auto_extract_skipped=%d, auto_extract_error=%d, mail_errors=%d, mailbox_errors=%d',
 	(int)$stats['lookback_days'],
 	(int)$stats['new_tracked'],
 	(int)$stats['marked_imported'],
@@ -183,6 +208,9 @@ $summary = sprintf(
 	(int)$stats['uids_scanned'],
 	(int)$stats['skipped_old'],
 	(int)$stats['skipped_duplicate'],
+	(int)$stats['auto_extract_triggered'],
+	(int)$stats['auto_extract_skipped'],
+	(int)$stats['auto_extract_error'],
 	(int)$stats['mail_errors'],
 	(int)$stats['mailbox_errors']
 );
@@ -252,6 +280,107 @@ function clear_imap_runtime_messages()
 	if (is_array($alerts)) {
 		// intentionally clear imap alert stack
 	}
+}
+
+function resolve_extract_php_binary(): string
+{
+	$forced = trim((string)(getenv('EXTRACT_PHP_BIN') ?: ''));
+	if ($forced !== '') {
+		return $forced;
+	}
+	$candidates = [
+		'/opt/plesk/php/8.3/bin/php',
+		'/opt/plesk/php/8.2/bin/php',
+		'/opt/plesk/php/8.1/bin/php',
+		'/usr/bin/php',
+	];
+	foreach ($candidates as $bin) {
+		if (is_file($bin) && is_executable($bin)) {
+			return $bin;
+		}
+	}
+	return '/opt/plesk/php/8.3/bin/php';
+}
+
+function maybe_trigger_invoice_extract_for_email(mysqli $db, MwLogger $logger, string $crmEmailId, string $subject, string $fromAddr, bool $extractEnabled, string $extractScript, string $extractPhpBin, string $extractLogFile, array &$seenEmails): string
+{
+	$crmEmailId = trim($crmEmailId);
+	if ($crmEmailId === '') {
+		return 'skipped';
+	}
+	if (isset($seenEmails[$crmEmailId])) {
+		return 'skipped';
+	}
+	$seenEmails[$crmEmailId] = true;
+
+	if (!$extractEnabled) {
+		$logger->error('poll auto extract skipped (script missing)', ['crm_email_id' => $crmEmailId]);
+		return 'error';
+	}
+
+	$pdfNames = fetch_pdf_attachment_names_for_email($db, $crmEmailId);
+	if (!$pdfNames) {
+		return 'skipped';
+	}
+	if (!is_invoice_like_mail($subject, $fromAddr, $pdfNames)) {
+		return 'skipped';
+	}
+
+	$cmd = 'env FORCE_RECHECK=1 LIMIT=80 TARGET_EMAIL_ID=' . escapeshellarg($crmEmailId)
+		. ' ' . escapeshellarg($extractPhpBin)
+		. ' ' . escapeshellarg($extractScript)
+		. ' >> ' . escapeshellarg($extractLogFile) . ' 2>&1';
+	$exitCode = 1;
+	exec($cmd, $unused, $exitCode);
+	if ($exitCode !== 0) {
+		$logger->error('poll auto extract failed', ['crm_email_id' => $crmEmailId, 'exit_code' => $exitCode]);
+		return 'error';
+	}
+
+	$logger->info('poll auto extract done', [
+		'crm_email_id' => $crmEmailId,
+		'subject' => $subject,
+		'from' => $fromAddr,
+	]);
+	return 'triggered';
+}
+
+function fetch_pdf_attachment_names_for_email(mysqli $db, string $crmEmailId): array
+{
+	$out = [];
+	$stmt = $db->prepare('SELECT filename FROM addinol_crm.notes WHERE deleted = 0 AND parent_type = "Emails" AND parent_id = ? AND LOWER(filename) LIKE "%.pdf" ORDER BY date_modified DESC LIMIT 20');
+	if (!$stmt) {
+		return $out;
+	}
+	$stmt->bind_param('s', $crmEmailId);
+	if (!$stmt->execute()) {
+		return $out;
+	}
+	$res = $stmt->get_result();
+	while ($row = $res->fetch_assoc()) {
+		$name = trim((string)($row['filename'] ?? ''));
+		if ($name !== '') {
+			$out[] = $name;
+		}
+	}
+	return $out;
+}
+
+function is_invoice_like_mail(string $subject, string $fromAddr, array $pdfNames): bool
+{
+	$raw = $subject . ' ' . implode(' ', $pdfNames);
+	$haystack = function_exists('mb_strtolower') ? mb_strtolower($raw, 'UTF-8') : strtolower($raw);
+	if (preg_match('/\brechnung\b|\binvoice\b|\bgutschrift\b/u', $haystack)) {
+		return true;
+	}
+	if (preg_match('/\bbe\s*\d{4}\s*-\s*\d+\b/u', $haystack)) {
+		return true;
+	}
+	$fromLower = strtolower($fromAddr);
+	if (strpos($fromLower, 'addinol') !== false && !empty($pdfNames)) {
+		return true;
+	}
+	return false;
 }
 
 function maybe_send_telegram_alert(MwLogger $logger, array $stats, string $summary): void

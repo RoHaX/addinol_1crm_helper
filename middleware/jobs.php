@@ -489,7 +489,7 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 		<div class="alert alert-info py-2"><?php echo htmlspecialchars($flash); ?></div>
 	<?php endif; ?>
 
-	<form method="get" class="row g-2 align-items-end mb-3">
+		<form method="get" class="row g-2 align-items-end mb-3">
 		<div class="col-md-2">
 			<label class="form-label">Status</label>
 			<select name="status" class="form-select form-select-sm">
@@ -511,12 +511,33 @@ $relationDisplayMap = build_relation_display_map($mysqli, $jobs);
 			<label class="form-label">Suche</label>
 			<input type="text" name="q" value="<?php echo htmlspecialchars($q); ?>" class="form-control form-control-sm" placeholder="Titel, Typ, Bezug-ID">
 		</div>
-		<div class="col-md-1">
-			<button type="submit" class="btn btn-sm btn-outline-primary w-100">Filter</button>
-		</div>
-	</form>
+			<div class="col-md-1">
+				<button type="submit" class="btn btn-sm btn-outline-primary w-100">Filter</button>
+			</div>
+		</form>
 
-	<div class="table-responsive">
+		<?php if ($statusFilter !== '' || $modeFilter !== '' || $q !== ''): ?>
+			<div class="alert alert-warning py-2 d-flex align-items-center justify-content-between gap-2">
+				<div>
+					<strong>Filter aktiv:</strong>
+					<?php if ($statusFilter !== ''): ?>
+						<span class="badge text-bg-secondary ms-1">Status: <?php echo htmlspecialchars($statusFilter); ?></span>
+					<?php endif; ?>
+					<?php if ($modeFilter !== ''): ?>
+						<span class="badge text-bg-secondary ms-1">Mode: <?php echo htmlspecialchars($modeFilter); ?></span>
+					<?php endif; ?>
+					<?php if ($q !== ''): ?>
+						<span class="badge text-bg-secondary ms-1">Suche: <?php echo htmlspecialchars($q); ?></span>
+					<?php endif; ?>
+					<?php if ($modeFilter === 'manual'): ?>
+						<span class="ms-2">Es werden nur manuelle Jobs angezeigt.</span>
+					<?php endif; ?>
+				</div>
+				<a class="btn btn-sm btn-outline-dark" href="jobs.php">Filter zurücksetzen</a>
+			</div>
+		<?php endif; ?>
+
+		<div class="table-responsive">
 		<table id="jobsTable" class="table table-striped table-sm align-middle">
 			<thead>
 				<tr>

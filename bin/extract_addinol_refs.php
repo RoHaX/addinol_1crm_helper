@@ -27,16 +27,51 @@
 		@file_put_contents($statusFile, json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 	}
 
+	function process_is_running(int $pid): bool {
+		if ($pid <= 0) {
+			return false;
+		}
+		if (function_exists('posix_kill')) {
+			return @posix_kill($pid, 0);
+		}
+		return is_dir('/proc/' . $pid);
+	}
+
+	function read_lock_pid(string $lockFile): int {
+		if (!is_file($lockFile)) {
+			return 0;
+		}
+		$raw = trim((string)@file_get_contents($lockFile));
+		if ($raw === '') {
+			return 0;
+		}
+		if ($raw[0] === '{') {
+			$data = json_decode($raw, true);
+			if (is_array($data) && !empty($data['pid'])) {
+				return (int)$data['pid'];
+			}
+		}
+		return (int)$raw;
+	}
+
+	function write_lock_file(string $lockFile, int $pid): void {
+		@file_put_contents($lockFile, json_encode([
+			'pid' => $pid,
+			'started_at' => date('c'),
+		], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), LOCK_EX);
+	}
+
 	$force = getenv('FORCE_RECHECK') === '1';
 	$limit = (int)(getenv('LIMIT') ?: 300);
 	$targetNoteId = trim((string)(getenv('TARGET_NOTE_ID') ?: ''));
 	$targetPoId = trim((string)(getenv('TARGET_PO_ID') ?: ''));
+	$targetEmailId = trim((string)(getenv('TARGET_EMAIL_ID') ?: ''));
 	if ($limit < 1) {
 		$limit = 300;
 	}
 
-	$lockHandle = @fopen($lockFile, 'c+');
-	if (!$lockHandle || !flock($lockHandle, LOCK_EX | LOCK_NB)) {
+	$existingPid = read_lock_pid($lockFile);
+	if ($existingPid > 0 && process_is_running($existingPid)) {
 		write_extract_status($statusFile, [
 			'running' => true,
 			'started_at' => date('c'),
@@ -45,15 +80,18 @@
 			'limit' => $limit,
 			'target_note_id' => $targetNoteId,
 			'target_po_id' => $targetPoId,
+			'target_email_id' => $targetEmailId,
 			'pid' => getmypid(),
 		]);
 		out_line("already running");
 		exit(2);
 	}
+	write_lock_file($lockFile, (int)getmypid());
 
 	$startedAt = date('c');
 	$finalized = false;
-	register_shutdown_function(function () use (&$finalized, $statusFile, $startedAt, $force, $limit, $targetNoteId, $targetPoId) {
+	register_shutdown_function(function () use (&$finalized, $statusFile, $startedAt, $force, $limit, $targetNoteId, $targetPoId, $targetEmailId, $lockFile) {
+		@unlink($lockFile);
 		if ($finalized) {
 			return;
 		}
@@ -68,6 +106,7 @@
 			'limit' => $limit,
 			'target_note_id' => $targetNoteId,
 			'target_po_id' => $targetPoId,
+			'target_email_id' => $targetEmailId,
 			'pid' => getmypid(),
 		]);
 	});
@@ -78,6 +117,7 @@
 		'limit' => $limit,
 		'target_note_id' => $targetNoteId,
 		'target_po_id' => $targetPoId,
+		'target_email_id' => $targetEmailId,
 		'pid' => getmypid(),
 		'message' => 'started',
 	]);
@@ -96,6 +136,7 @@
 			'limit' => $limit,
 			'target_note_id' => $targetNoteId,
 			'target_po_id' => $targetPoId,
+			'target_email_id' => $targetEmailId,
 			'pid' => getmypid(),
 		]);
 		exit(1);
@@ -131,6 +172,10 @@
 				)
 			))
 		)";
+	}
+	if ($targetEmailId !== '') {
+		$safeEmailId = $mysqli->real_escape_string($targetEmailId);
+		$selectSql .= " AND n.parent_type = 'Emails' AND n.parent_id = '" . $safeEmailId . "'";
 	}
 	if (!$force) {
 		$selectSql .= " AND r.id IS NULL";
@@ -200,6 +245,7 @@
 			'limit' => $limit,
 			'target_note_id' => $targetNoteId,
 			'target_po_id' => $targetPoId,
+			'target_email_id' => $targetEmailId,
 			'pid' => getmypid(),
 		]);
 		exit(1);
@@ -226,7 +272,7 @@
 	}
 
 	function extract_pdf_text(string $filepath): string {
-		$cmd = 'gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=- ' . escapeshellarg($filepath) . ' 2>/dev/null';
+		$cmd = 'timeout 25s gs -q -dNOPAUSE -dBATCH -sDEVICE=txtwrite -sOutputFile=- ' . escapeshellarg($filepath) . ' 2>/dev/null';
 		$out = shell_exec($cmd);
 		return is_string($out) ? $out : '';
 	}
@@ -236,6 +282,35 @@
 			return '';
 		}
 		return isset($m[1]) ? normalize_ref((string)$m[1]) : '';
+	}
+
+	function extract_be_order_no(string $text): string {
+		$patterns = [
+			'/Ihre\s+Bestellung\s*[:#]?\s*([A-Z]{2}\s*\d{4}\s*-\s*\d+)/iu',
+			'/\b(BE\s*\d{4}\s*-\s*\d+)\b/iu',
+		];
+		foreach ($patterns as $pattern) {
+			$value = find_first_match($pattern, $text);
+			if ($value !== '') {
+				return str_replace(' ', '', $value);
+			}
+		}
+		return '';
+	}
+
+	function extract_at_order_no(string $text): string {
+		$patterns = [
+			'/Auftragsbest[aä]tigung\s*(?:Nr\.?|Nummer)?\s*[:#]?\s*(AT\s*\d{5,})/iu',
+			'/Auftrags(?:nummer|nr\.?)\s*[:#]?\s*(AT\s*\d{5,})/iu',
+			'/\b(AT\s*\d{5,})\b/iu',
+		];
+		foreach ($patterns as $pattern) {
+			$value = find_first_match($pattern, $text);
+			if ($value !== '') {
+				return str_replace(' ', '', $value);
+			}
+		}
+		return '';
 	}
 
 	function find_purchase_order_id(mysqli_stmt $stmtByNo, mysqli_stmt $stmtByName, string $beOrderNo): string {
@@ -295,10 +370,8 @@
 			continue;
 		}
 
-		$beOrderNo = find_first_match('/Ihre\s+Bestellung\s+([A-Z]{2}\s*\d{4}\s*-\s*\d+)/iu', $text);
-		$beOrderNo = str_replace(' ', '', $beOrderNo);
-		$atOrderNo = find_first_match('/Auftragsnummer\s+([A-Z]{2}\s*\d{5,})/iu', $text);
-		$atOrderNo = str_replace(' ', '', $atOrderNo);
+		$beOrderNo = extract_be_order_no($text);
+		$atOrderNo = extract_at_order_no($text);
 
 		if ($beOrderNo === '' && $atOrderNo === '') {
 			$stats['skipped_no_fields']++;
@@ -350,9 +423,9 @@
 		'limit' => $limit,
 		'target_note_id' => $targetNoteId,
 		'target_po_id' => $targetPoId,
+		'target_email_id' => $targetEmailId,
 		'pid' => getmypid(),
 		'stats' => $stats,
 	]);
-	flock($lockHandle, LOCK_UN);
-	fclose($lockHandle);
+	@unlink($lockFile);
 	exit(0);

@@ -20,8 +20,6 @@
 			'default' => 'middleware/firmen.php',
 			'items' => [
 				['artikelliste.php', 'fas fa-oil-can', 'Artikelliste'],
-				['artikel_kunde.php', 'fas fa-users', 'Artikel -> Kunde'],
-				['kunde_artikel.php', 'fas fa-user-tag', 'Kunde -> Artikel'],
 				['addinol_map.php', 'fas fa-map-marked-alt', 'Addinol-Map'],
 				['middleware/firmen.php', 'fas fa-address-book', 'Firmen'],
 			],
@@ -168,3 +166,38 @@
 	}
 }
 </style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+	const forms = document.querySelectorAll('form');
+	if (!forms.length) {
+		return;
+	}
+
+	forms.forEach(function (form) {
+		const method = String(form.getAttribute('method') || 'get').toLowerCase();
+		if (method !== 'get') {
+			return;
+		}
+		if (form.hasAttribute('data-auto-submit-off')) {
+			return;
+		}
+		if (!form.querySelector('button[type="submit"], input[type="submit"]')) {
+			return;
+		}
+
+		form.querySelectorAll('select').forEach(function (select) {
+			if (select.hasAttribute('data-no-auto-submit')) {
+				return;
+			}
+			select.addEventListener('change', function () {
+				if (typeof form.requestSubmit === 'function') {
+					form.requestSubmit();
+				} else {
+					form.submit();
+				}
+			});
+		});
+	});
+});
+</script>

@@ -464,15 +464,12 @@
 						<td><?php echo format_stage_badge_local($row['shipping_stage'] ?? ''); ?></td>
 						<td><?php echo format_sales_order_stage_badge($row['so_stage'] ?? ''); ?></td>
 						<td><?php echo htmlspecialchars($row['date_modified'] ?? ''); ?></td>
-						<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
-						<td>
-							<div class="btn-group btn-group-sm" role="group">
-								<button type="button" class="btn btn-outline-secondary copy-btn" data-copy="<?php echo htmlspecialchars($copyValue, ENT_QUOTES); ?>" title="AT (oder BE/Bestellnummer) kopieren">
-									<i class="fas fa-copy"></i> Copy
-								</button>
-								<button type="button" class="btn btn-outline-dark api-status-btn" data-reference="<?php echo htmlspecialchars($copyValue, ENT_QUOTES); ?>" data-purchase-order-id="<?php echo htmlspecialchars((string)($row['id'] ?? ''), ENT_QUOTES); ?>" title="Lieferstatus via API prüfen">
-									<i class="fas fa-satellite-dish"></i> API
-								</button>
+							<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+							<td>
+								<div class="btn-group btn-group-sm" role="group">
+									<button type="button" class="btn btn-outline-dark api-status-btn" data-reference="<?php echo htmlspecialchars($copyValue, ENT_QUOTES); ?>" data-purchase-order-id="<?php echo htmlspecialchars((string)($row['id'] ?? ''), ENT_QUOTES); ?>" title="Lieferstatus via API prüfen">
+										<i class="fas fa-satellite-dish"></i> <i class="fas fa-plug"></i> API
+									</button>
 								<?php if ($reference === ''): ?>
 									<form method="post" class="d-inline">
 										<input type="hidden" name="action" value="reextract_note">
@@ -638,28 +635,7 @@ document.addEventListener('DOMContentLoaded', () => {
 		});
 	}
 
-	document.querySelectorAll('.copy-btn').forEach((btn) => {
-		btn.addEventListener('click', async () => {
-			const val = btn.getAttribute('data-copy') || '';
-			if (!val) {
-				showToast('Kein Wert vorhanden');
-				return;
-			}
-			try {
-				if (navigator.clipboard && navigator.clipboard.writeText) {
-					await navigator.clipboard.writeText(val);
-				} else {
-					fallbackCopy(val);
-				}
-				showToast('Kopiert: ' + val);
-			} catch (e) {
-				fallbackCopy(val);
-				showToast('Kopiert: ' + val);
-			}
-		});
-	});
-
-	document.querySelectorAll('.api-status-btn').forEach((btn) => {
+		document.querySelectorAll('.api-status-btn').forEach((btn) => {
 		btn.addEventListener('click', async () => {
 			const reference = (btn.getAttribute('data-reference') || '').trim();
 			const purchaseOrderId = (btn.getAttribute('data-purchase-order-id') || '').trim();

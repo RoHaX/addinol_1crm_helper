@@ -193,6 +193,26 @@
 		return rtrim(substr($txt, 0, $maxLen - 1)) . '...';
 	}
 
+	function uuid_v4(): string {
+		$data = random_bytes(16);
+		$data[6] = chr((ord($data[6]) & 0x0f) | 0x40);
+		$data[8] = chr((ord($data[8]) & 0x3f) | 0x80);
+		return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+	}
+
+	function ensure_account_contact_link(mysqli $mysqli, string $accountId, string $contactId): bool {
+		$stmt = $mysqli->prepare(
+			"INSERT INTO accounts_contacts (date_modified, deleted, contact_id, account_id)
+			 VALUES (NOW(), 0, ?, ?)
+			 ON DUPLICATE KEY UPDATE date_modified = NOW(), deleted = 0"
+		);
+		if (!$stmt) {
+			return false;
+		}
+		$stmt->bind_param('ss', $contactId, $accountId);
+		return $stmt->execute();
+	}
+
 	function build_account_overview(mysqli $mysqli, string $accountId): array {
 		$overview = [
 			'open_quotes' => 0,
@@ -295,11 +315,11 @@
 	$q = trim($_GET['q'] ?? '');
 	$accountType = trim($_GET['account_type'] ?? '');
 	$accountId = trim($_GET['account_id'] ?? '');
-	$onlyCurrentQuotes = (($_GET['current_quotes'] ?? '1') !== '0');
-	$onlyCurrentInvoices = (($_GET['current_invoices'] ?? '1') !== '0');
-	$onlyCurrentActivities = (($_GET['current_activities'] ?? '1') !== '0');
-	$onlyCurrentOrders = (($_GET['current_orders'] ?? '1') !== '0');
-	$onlyCurrentEmails = (($_GET['current_emails'] ?? '1') !== '0');
+	$onlyCurrentQuotes = (($_GET['current_quotes'] ?? '0') !== '0');
+	$onlyCurrentInvoices = (($_GET['current_invoices'] ?? '0') !== '0');
+	$onlyCurrentActivities = (($_GET['current_activities'] ?? '0') !== '0');
+	$onlyCurrentOrders = (($_GET['current_orders'] ?? '0') !== '0');
+	$onlyCurrentEmails = (($_GET['current_emails'] ?? '0') !== '0');
 
 	if (($_GET['overview_json'] ?? '') === '1') {
 		header('Content-Type: application/json; charset=utf-8');
@@ -336,8 +356,154 @@
 	$localNoteHtml = '';
 	$noteSaved = false;
 	$noteSaveError = '';
+	$contactSaveSuccess = false;
+	$contactSaveError = '';
 
-	if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_local_note') {
+	if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_contact') {
+		$mode = trim((string)($_POST['contact_mode'] ?? 'create'));
+		$contactId = trim((string)($_POST['contact_id'] ?? ''));
+		$formAccountId = trim((string)($_POST['account_id'] ?? $accountId));
+		$accountId = $formAccountId !== '' ? $formAccountId : $accountId;
+		$salutation = trim((string)($_POST['salutation'] ?? 'Mr.'));
+		$firstName = trim((string)($_POST['first_name'] ?? ''));
+		$lastName = trim((string)($_POST['last_name'] ?? ''));
+		$title = trim((string)($_POST['title'] ?? ''));
+		$department = trim((string)($_POST['department'] ?? ''));
+		$email1 = trim((string)($_POST['email1'] ?? ''));
+		$phoneWork = trim((string)($_POST['phone_work'] ?? ''));
+		$phoneMobile = trim((string)($_POST['phone_mobile'] ?? ''));
+		$description = trim((string)($_POST['description'] ?? ''));
+		$phoneWorkRaw = $phoneWork;
+		$phoneMobileRaw = $phoneMobile;
+
+		$allowedSalutations = ['Mr.', 'Ms.', 'Mrs.', 'Dr.'];
+		if (!in_array($salutation, $allowedSalutations, true)) {
+			$salutation = 'Mr.';
+		}
+		if ($accountId === '') {
+			$contactSaveError = 'Fehlende Firma für Kontaktanlage.';
+		} elseif ($lastName === '') {
+			$contactSaveError = 'Nachname ist erforderlich.';
+		} elseif ($mode === 'update' && $contactId === '') {
+			$contactSaveError = 'Kontakt-ID fehlt für Bearbeitung.';
+		} else {
+			$userId = '';
+			$ownerRows = fetch_all_assoc(
+				$mysqli,
+				"SELECT assigned_user_id FROM accounts WHERE deleted = 0 AND id = ? LIMIT 1",
+				's',
+				[$accountId]
+			);
+			$userId = trim((string)($ownerRows[0]['assigned_user_id'] ?? ''));
+			if ($userId === '') {
+				$userRows = fetch_all_assoc(
+					$mysqli,
+					"SELECT assigned_user_id FROM contacts WHERE deleted = 0 AND assigned_user_id IS NOT NULL AND assigned_user_id <> '' ORDER BY date_modified DESC LIMIT 1"
+				);
+				$userId = trim((string)($userRows[0]['assigned_user_id'] ?? '1'));
+			}
+
+			if ($mode === 'update') {
+				$stmt = $mysqli->prepare(
+					"UPDATE contacts
+					 SET date_modified = NOW(),
+						 modified_user_id = ?,
+						 primary_account_id = ?,
+						 salutation = ?,
+						 first_name = ?,
+						 last_name = ?,
+						 title = ?,
+						 department = ?,
+						 phone_mobile = ?,
+						 phone_mobile__raw = ?,
+						 phone_work = ?,
+						 phone_work__raw = ?,
+						 email1 = ?,
+						 description = ?
+					 WHERE id = ? AND deleted = 0"
+				);
+				if (!$stmt) {
+					$contactSaveError = 'Kontakt konnte nicht aktualisiert werden (Prepare fehlgeschlagen).';
+				} else {
+					$stmt->bind_param(
+						str_repeat('s', 14),
+						$userId,
+						$accountId,
+						$salutation,
+						$firstName,
+						$lastName,
+						$title,
+						$department,
+						$phoneMobile,
+						$phoneMobileRaw,
+						$phoneWork,
+						$phoneWorkRaw,
+						$email1,
+						$description,
+						$contactId
+					);
+					if (!$stmt->execute()) {
+						$contactSaveError = 'Kontakt konnte nicht aktualisiert werden (Execute fehlgeschlagen).';
+					} elseif ($stmt->affected_rows < 0) {
+						$contactSaveError = 'Kontakt konnte nicht aktualisiert werden.';
+					} else {
+						if (!ensure_account_contact_link($mysqli, $accountId, $contactId)) {
+							$contactSaveError = 'Kontakt aktualisiert, aber Verknüpfung zur Firma fehlgeschlagen.';
+						} else {
+							$contactSaveSuccess = true;
+						}
+					}
+				}
+			} else {
+				$contactId = uuid_v4();
+				$stmt = $mysqli->prepare(
+					"INSERT INTO contacts (
+						id, deleted, date_entered, date_modified,
+						modified_user_id, assigned_user_id, created_by, primary_account_id,
+						salutation, first_name, last_name, title, department,
+						phone_mobile, phone_mobile__raw, phone_work, phone_work__raw, email1, description
+					) VALUES (
+						?, 0, NOW(), NOW(),
+						?, ?, ?, ?,
+						?, ?, ?, ?, ?,
+						?, ?, ?, ?, ?, ?
+					)"
+				);
+				if (!$stmt) {
+					$contactSaveError = 'Kontakt konnte nicht angelegt werden (Prepare fehlgeschlagen).';
+				} else {
+					$stmt->bind_param(
+						str_repeat('s', 16),
+						$contactId,
+						$userId,
+						$userId,
+						$userId,
+						$accountId,
+						$salutation,
+						$firstName,
+						$lastName,
+						$title,
+						$department,
+						$phoneMobile,
+						$phoneMobileRaw,
+						$phoneWork,
+						$phoneWorkRaw,
+						$email1,
+						$description
+					);
+					if (!$stmt->execute()) {
+						$contactSaveError = 'Kontakt konnte nicht angelegt werden (Execute fehlgeschlagen).';
+					} else {
+						if (!ensure_account_contact_link($mysqli, $accountId, $contactId)) {
+							$contactSaveError = 'Kontakt angelegt, aber Verknüpfung zur Firma fehlgeschlagen.';
+						} else {
+							$contactSaveSuccess = true;
+						}
+					}
+				}
+			}
+		}
+	} elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_local_note') {
 		$localNoteHtml = (string)($_POST['local_note_html'] ?? '');
 		$localNoteHtml = preg_replace('~<script\\b[^>]*>.*?</script>~is', '', $localNoteHtml);
 		if (@file_put_contents($localNoteFile, $localNoteHtml) === false) {
@@ -369,6 +535,7 @@
 	$contacts = [];
 	$quotes = [];
 	$salesOrders = [];
+	$purchaseOrders = [];
 	$invoices = [];
 	$soldProducts = [];
 	$activities = [];
@@ -384,12 +551,12 @@
 	$firms = [];
 
 	if ($isDetailView) {
-		$firmRows = fetch_all_assoc(
-			$mysqli,
-			"SELECT id, ticker_symbol, name, account_type, phone_office, email1, website, balance,
-					shipping_address_street, shipping_address_postalcode, shipping_address_city, shipping_address_state, shipping_address_country
-			 FROM accounts
-			 WHERE deleted = 0 AND id = ?
+			$firmRows = fetch_all_assoc(
+				$mysqli,
+				"SELECT id, ticker_symbol, name, account_type, phone_office, email1, website, balance, account_popup,
+						shipping_address_street, shipping_address_postalcode, shipping_address_city, shipping_address_state, shipping_address_country
+				 FROM accounts
+				 WHERE deleted = 0 AND id = ?
 			 LIMIT 1",
 			's',
 			[$accountId]
@@ -397,12 +564,12 @@
 		$firm = $firmRows[0] ?? null;
 
 		if ($firm) {
-			$contacts = fetch_all_assoc(
-				$mysqli,
-				"SELECT id, salutation, first_name, last_name, title, email1, phone_mobile, phone_work
-				 FROM contacts
-				 WHERE deleted = 0 AND primary_account_id = ?
-				 ORDER BY last_name ASC, first_name ASC",
+				$contacts = fetch_all_assoc(
+					$mysqli,
+					"SELECT id, salutation, first_name, last_name, title, department, email1, phone_mobile, phone_work, description
+					 FROM contacts
+					 WHERE deleted = 0 AND primary_account_id = ?
+					 ORDER BY last_name ASC, first_name ASC",
 				's',
 				[$accountId]
 			);
@@ -424,6 +591,17 @@
 				 FROM sales_orders
 				 WHERE deleted = 0 AND billing_account_id = ?" . ($onlyCurrentOrders ? " AND COALESCE(due_date, delivery_date, date_entered) >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
 				 ORDER BY due_date DESC, so_number DESC
+				 LIMIT 500",
+				's',
+				[$accountId]
+			);
+
+			$purchaseOrders = fetch_all_assoc(
+				$mysqli,
+				"SELECT id, prefix, po_number, shipping_stage, date_entered, amount
+				 FROM purchase_orders
+				 WHERE deleted = 0 AND supplier_id = ?" . ($onlyCurrentOrders ? " AND date_entered >= DATE_SUB(CURDATE(), INTERVAL 60 DAY)" : "") . "
+				 ORDER BY date_entered DESC, po_number DESC
 				 LIMIT 500",
 				's',
 				[$accountId]
@@ -689,218 +867,322 @@
 						</div>
 					</div>
 
-					<div class="card shadow-sm">
-						<div class="card-header py-2"><strong>Kontakte</strong> <span class="text-muted">(<?php echo count($contacts); ?>)</span></div>
-						<div class="card-body">
-							<div class="table-responsive">
-								<table id="contactsTable" class="table table-striped table-sm align-middle js-dt">
-									<thead>
-										<tr>
-											<th>Name</th>
-											<th>Titel</th>
-											<th>Mobil</th>
-											<th>Arbeit</th>
-											<th>E-Mail</th>
-											<th>1CRM</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($contacts as $row): ?>
-											<?php $fullName = trim(($row['salutation'] ?? '') . ' ' . ($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? '')); ?>
+						<div class="card shadow-sm">
+							<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+								<div><strong>Kontakte</strong> <span class="text-muted">(<?php echo count($contacts); ?>)</span></div>
+								<div class="d-flex align-items-center gap-2">
+									<button type="button" class="btn btn-sm btn-outline-primary" id="openCreateContactModal">
+										<i class="fas fa-plus"></i> Neuer Kontakt
+									</button>
+									<a class="btn btn-sm btn-outline-secondary" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Contacts&action=EditView&parent_type=Accounts&parent_id=' . urlencode($accountId) . '&account_id=' . urlencode($accountId); ?>">
+										<i class="fas fa-external-link-alt"></i> In 1CRM
+									</a>
+								</div>
+							</div>
+							<div class="card-body">
+								<?php if ($contactSaveSuccess): ?>
+									<div class="alert alert-success py-2">Kontakt wurde gespeichert.</div>
+								<?php endif; ?>
+								<?php if ($contactSaveError !== ''): ?>
+									<div class="alert alert-danger py-2"><?php echo htmlspecialchars($contactSaveError); ?></div>
+								<?php endif; ?>
+								<div class="table-responsive">
+									<table id="contactsTable" class="table table-striped table-sm align-middle js-dt">
+										<thead>
 											<tr>
-												<td><?php echo htmlspecialchars($fullName); ?></td>
-												<td><?php echo htmlspecialchars($row['title'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['phone_mobile'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['phone_work'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['email1'] ?? ''); ?></td>
-												<td>
-													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Contacts&action=DetailView&record=' . urlencode($row['id']); ?>">
-														<i class="fas fa-external-link-alt"></i> Öffnen
-													</a>
-												</td>
+												<th>Name</th>
+												<th>Titel</th>
+												<th>Abteilung</th>
+												<th>Mobil</th>
+												<th>Arbeit</th>
+												<th>E-Mail</th>
+												<th>Aktionen</th>
 											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											<?php foreach ($contacts as $row): ?>
+												<?php $fullName = trim(($row['salutation'] ?? '') . ' ' . ($row['first_name'] ?? '') . ' ' . ($row['last_name'] ?? '')); ?>
+												<tr>
+													<td><?php echo htmlspecialchars($fullName); ?></td>
+													<td><?php echo htmlspecialchars($row['title'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['department'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['phone_mobile'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['phone_work'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['email1'] ?? ''); ?></td>
+													<td class="text-nowrap">
+														<button
+															type="button"
+															class="btn btn-sm btn-outline-primary contact-edit-btn"
+															data-contact-id="<?php echo htmlspecialchars((string)$row['id'], ENT_QUOTES); ?>"
+															data-salutation="<?php echo htmlspecialchars((string)($row['salutation'] ?? ''), ENT_QUOTES); ?>"
+															data-first-name="<?php echo htmlspecialchars((string)($row['first_name'] ?? ''), ENT_QUOTES); ?>"
+															data-last-name="<?php echo htmlspecialchars((string)($row['last_name'] ?? ''), ENT_QUOTES); ?>"
+															data-title="<?php echo htmlspecialchars((string)($row['title'] ?? ''), ENT_QUOTES); ?>"
+															data-department="<?php echo htmlspecialchars((string)($row['department'] ?? ''), ENT_QUOTES); ?>"
+															data-email1="<?php echo htmlspecialchars((string)($row['email1'] ?? ''), ENT_QUOTES); ?>"
+															data-phone-work="<?php echo htmlspecialchars((string)($row['phone_work'] ?? ''), ENT_QUOTES); ?>"
+															data-phone-mobile="<?php echo htmlspecialchars((string)($row['phone_mobile'] ?? ''), ENT_QUOTES); ?>"
+															data-description="<?php echo htmlspecialchars((string)($row['description'] ?? ''), ENT_QUOTES); ?>"
+														>
+															<i class="fas fa-edit"></i> Bearbeiten
+														</button>
+														<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Contacts&action=DetailView&record=' . urlencode($row['id']); ?>">
+															<i class="fas fa-external-link-alt"></i> Detail
+														</a>
+													</td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								</div>
 							</div>
 						</div>
 					</div>
 				</div>
-			</div>
 
-			<div class="row g-3 mb-3">
-				<div class="col-12 col-xxl-6">
+				<div class="row g-3 mb-3">
+					<div class="col-12 col-xxl-6">
 					<div class="card shadow-sm h-100">
 						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
 							<div><strong>Angebote</strong> <span class="text-muted">(<?php echo count($quotes); ?>)</span></div>
-							<div class="form-check form-switch mb-0">
-								<?php $quotesOnUrl = build_detail_url($accountId, true, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
-								<?php $quotesOffUrl = build_detail_url($accountId, false, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
-								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentQuotes" <?php echo $onlyCurrentQuotes ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($quotesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($quotesOffUrl, ENT_QUOTES); ?>">
-								<label class="form-check-label small" for="toggleCurrentQuotes">Nur aktuelle</label>
+							<div class="d-flex align-items-center gap-2">
+								<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Quotes&action=EditView&parent_type=Accounts&parent_id=' . urlencode($accountId) . '&billing_account_id=' . urlencode($accountId); ?>">
+									<i class="fas fa-plus"></i> Angebot erstellen
+								</a>
+								<div class="form-check form-switch mb-0">
+									<?php $quotesOnUrl = build_detail_url($accountId, true, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+									<?php $quotesOffUrl = build_detail_url($accountId, false, $onlyCurrentInvoices, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+									<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentQuotes" <?php echo $onlyCurrentQuotes ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($quotesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($quotesOffUrl, ENT_QUOTES); ?>">
+									<label class="form-check-label small" for="toggleCurrentQuotes">Nur aktuelle</label>
+								</div>
 							</div>
 						</div>
-						<div class="card-body">
-							<div class="table-responsive">
-								<table id="quotesTable" class="table table-striped table-sm align-middle js-dt">
-									<thead>
-										<tr>
-											<th>Nr.</th>
-											<th>Status</th>
-											<th>Gültig bis</th>
-											<th>Betrag</th>
-											<th>1CRM</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($quotes as $row): ?>
+						<?php if (!empty($quotes)): ?>
+							<div class="card-body">
+								<div class="table-responsive">
+									<table id="quotesTable" class="table table-striped table-sm align-middle js-dt">
+										<thead>
 											<tr>
-												<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['quote_number'] ?? ''))); ?></td>
-												<td><?php echo format_stage_badge('quote', $row['quote_stage'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['valid_until'] ?? ''); ?></td>
-												<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
-												<td>
-													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Quotes&action=DetailView&record=' . urlencode($row['id']); ?>">
-														<i class="fas fa-external-link-alt"></i> Öffnen
-													</a>
-												</td>
+												<th>Nr.</th>
+												<th>Status</th>
+												<th>Gültig bis</th>
+												<th>Betrag</th>
+												<th>Detail</th>
 											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											<?php foreach ($quotes as $row): ?>
+												<tr>
+													<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['quote_number'] ?? ''))); ?></td>
+													<td><?php echo format_stage_badge('quote', $row['quote_stage'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['valid_until'] ?? ''); ?></td>
+													<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+													<td>
+														<a class="btn btn-sm btn-outline-primary" href="<?php echo 'angebot.php?quote_id=' . urlencode((string)$row['id']); ?>">
+															<i class="fas fa-file-signature"></i> Detail
+														</a>
+													</td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								</div>
 							</div>
-						</div>
+						<?php endif; ?>
 					</div>
 				</div>
 				<div class="col-12 col-xxl-6">
 					<div class="card shadow-sm h-100">
 						<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
 							<div><strong>Rechnungen</strong> <span class="text-muted">(<?php echo count($invoices); ?>)</span></div>
-							<div class="form-check form-switch mb-0">
-								<?php $invoicesOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, true, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
-								<?php $invoicesOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, false, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
-								<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentInvoices" <?php echo $onlyCurrentInvoices ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($invoicesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($invoicesOffUrl, ENT_QUOTES); ?>">
-								<label class="form-check-label small" for="toggleCurrentInvoices">Nur aktuelle</label>
+							<div class="d-flex align-items-center gap-2">
+								<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Invoice&action=EditView&parent_type=Accounts&parent_id=' . urlencode($accountId) . '&billing_account_id=' . urlencode($accountId); ?>">
+									<i class="fas fa-plus"></i> Rechnung erstellen
+								</a>
+								<div class="form-check form-switch mb-0">
+									<?php $invoicesOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, true, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+									<?php $invoicesOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, false, $onlyCurrentActivities, $onlyCurrentOrders, $onlyCurrentEmails); ?>
+									<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentInvoices" <?php echo $onlyCurrentInvoices ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($invoicesOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($invoicesOffUrl, ENT_QUOTES); ?>">
+									<label class="form-check-label small" for="toggleCurrentInvoices">Nur aktuelle</label>
+								</div>
 							</div>
 						</div>
-						<div class="card-body">
-							<div class="table-responsive">
-								<table id="invoicesTable" class="table table-striped table-sm align-middle js-dt">
-									<thead>
-										<tr>
-											<th>Nr.</th>
-											<th>Status</th>
-											<th>Datum</th>
-											<th>Fällig</th>
-											<th>Betrag</th>
-											<th>Offen</th>
-											<th>1CRM</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($invoices as $row): ?>
+						<?php if (!empty($invoices)): ?>
+							<div class="card-body">
+								<div class="table-responsive">
+									<table id="invoicesTable" class="table table-striped table-sm align-middle js-dt">
+										<thead>
 											<tr>
-												<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['invoice_number'] ?? ''))); ?></td>
-												<td><?php echo format_stage_badge('invoice', $row['shipping_stage'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['invoice_date'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['due_date'] ?? ''); ?></td>
-												<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
-												<td><?php echo isset($row['amount_due']) ? number_format((float)$row['amount_due'], 2, ',', '.') : ''; ?></td>
-												<td>
-													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Invoice&action=DetailView&record=' . urlencode($row['id']); ?>">
-														<i class="fas fa-external-link-alt"></i> Öffnen
-													</a>
-												</td>
+												<th>Nr.</th>
+												<th>Status</th>
+												<th>Datum</th>
+												<th>Fällig</th>
+												<th>Betrag</th>
+												<th>Offen</th>
+												<th>Detail</th>
 											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											<?php foreach ($invoices as $row): ?>
+												<tr>
+													<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['invoice_number'] ?? ''))); ?></td>
+													<td><?php echo format_stage_badge('invoice', $row['shipping_stage'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['invoice_date'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['due_date'] ?? ''); ?></td>
+													<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+													<td><?php echo isset($row['amount_due']) ? number_format((float)$row['amount_due'], 2, ',', '.') : ''; ?></td>
+													<td>
+														<a class="btn btn-sm btn-outline-primary" href="<?php echo 'rechnung.php?invoice_id=' . urlencode((string)$row['id']); ?>">
+															<i class="fas fa-file-invoice-dollar"></i> Detail
+														</a>
+													</td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								</div>
 							</div>
+						<?php endif; ?>
+					</div>
+				</div>
+					<div class="row g-3 mb-3">
+					<div class="col-12 col-xxl-6">
+						<div class="card shadow-sm h-100">
+							<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+								<div><strong>Aufträge</strong> <span class="text-muted">(<?php echo count($salesOrders); ?>)</span></div>
+								<div class="d-flex align-items-center gap-2">
+									<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=SalesOrders&action=EditView&parent_type=Accounts&parent_id=' . urlencode($accountId) . '&billing_account_id=' . urlencode($accountId); ?>">
+										<i class="fas fa-plus"></i> Auftrag erstellen
+									</a>
+									<div class="form-check form-switch mb-0">
+										<?php $ordersOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, true, $onlyCurrentEmails); ?>
+										<?php $ordersOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, false, $onlyCurrentEmails); ?>
+										<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentOrders" <?php echo $onlyCurrentOrders ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($ordersOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($ordersOffUrl, ENT_QUOTES); ?>">
+										<label class="form-check-label small" for="toggleCurrentOrders">Nur aktuelle</label>
+									</div>
+								</div>
+							</div>
+							<?php if (!empty($salesOrders)): ?>
+								<div class="card-body">
+									<div class="table-responsive">
+										<table id="ordersTable" class="table table-striped table-sm align-middle js-dt">
+											<thead>
+												<tr>
+													<th>Nr.</th>
+													<th>Status</th>
+													<th>Fällig</th>
+													<th>Lieferdatum</th>
+													<th>Betrag</th>
+													<th>Detail</th>
+												</tr>
+											</thead>
+											<tbody>
+												<?php foreach ($salesOrders as $row): ?>
+													<tr>
+														<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['so_number'] ?? ''))); ?></td>
+														<td><?php echo format_stage_badge('order', $row['so_stage'] ?? ''); ?></td>
+														<td><?php echo htmlspecialchars($row['due_date'] ?? ''); ?></td>
+														<td><?php echo htmlspecialchars($row['delivery_date'] ?? ''); ?></td>
+														<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+														<td>
+															<a class="btn btn-sm btn-outline-primary" href="<?php echo 'auftrag.php?sales_order_id=' . urlencode((string)$row['id']); ?>">
+																<i class="fas fa-clipboard-check"></i> Detail
+															</a>
+														</td>
+													</tr>
+												<?php endforeach; ?>
+											</tbody>
+										</table>
+									</div>
+								</div>
+							<?php endif; ?>
+						</div>
+					</div>
+					<div class="col-12 col-xxl-6">
+						<div class="card shadow-sm h-100">
+							<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
+								<div><strong>Bestellungen</strong> <span class="text-muted">(<?php echo count($purchaseOrders); ?>)</span></div>
+								<div class="d-flex align-items-center gap-2">
+									<a class="btn btn-sm btn-outline-primary" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=PurchaseOrders&action=EditView&parent_type=Accounts&parent_id=' . urlencode($accountId) . '&supplier_id=' . urlencode($accountId); ?>">
+										<i class="fas fa-plus"></i> Bestellung erstellen
+									</a>
+									<div class="small text-muted">Lieferantensicht</div>
+								</div>
+							</div>
+							<?php if (!empty($purchaseOrders)): ?>
+								<div class="card-body">
+									<div class="table-responsive">
+										<table id="purchaseOrdersTable" class="table table-striped table-sm align-middle js-dt">
+											<thead>
+												<tr>
+													<th>Nr.</th>
+													<th>Status</th>
+													<th>Erstellt</th>
+													<th>Betrag</th>
+													<th>Detail</th>
+												</tr>
+											</thead>
+											<tbody>
+												<?php foreach ($purchaseOrders as $row): ?>
+													<tr>
+														<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['po_number'] ?? ''))); ?></td>
+														<td><?php echo format_stage_badge('order', $row['shipping_stage'] ?? ''); ?></td>
+														<td><?php echo htmlspecialchars(substr((string)($row['date_entered'] ?? ''), 0, 10)); ?></td>
+														<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+														<td>
+															<a class="btn btn-sm btn-outline-primary" href="<?php echo 'bestellung.php?purchase_order_id=' . urlencode((string)$row['id']); ?>">
+																<i class="fas fa-shopping-cart"></i> Detail
+															</a>
+														</td>
+													</tr>
+												<?php endforeach; ?>
+											</tbody>
+										</table>
+									</div>
+								</div>
+							<?php endif; ?>
 						</div>
 					</div>
 				</div>
-			</div>
-
-			<div class="card shadow-sm mb-3">
-				<div class="card-header py-2 d-flex align-items-center justify-content-between gap-2">
-					<div><strong>Aufträge</strong> <span class="text-muted">(<?php echo count($salesOrders); ?>)</span></div>
-					<div class="form-check form-switch mb-0">
-						<?php $ordersOnUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, true, $onlyCurrentEmails); ?>
-						<?php $ordersOffUrl = build_detail_url($accountId, $onlyCurrentQuotes, $onlyCurrentInvoices, $onlyCurrentActivities, false, $onlyCurrentEmails); ?>
-						<input class="form-check-input current-toggle" type="checkbox" id="toggleCurrentOrders" <?php echo $onlyCurrentOrders ? 'checked' : ''; ?> data-url-on="<?php echo htmlspecialchars($ordersOnUrl, ENT_QUOTES); ?>" data-url-off="<?php echo htmlspecialchars($ordersOffUrl, ENT_QUOTES); ?>">
-						<label class="form-check-label small" for="toggleCurrentOrders">Nur aktuelle</label>
-					</div>
-				</div>
-				<div class="card-body">
-					<div class="table-responsive">
-						<table id="ordersTable" class="table table-striped table-sm align-middle js-dt">
-							<thead>
-								<tr>
-									<th>Nr.</th>
-									<th>Status</th>
-									<th>Fällig</th>
-									<th>Lieferdatum</th>
-									<th>Betrag</th>
-									<th>1CRM</th>
-								</tr>
-							</thead>
-							<tbody>
-								<?php foreach ($salesOrders as $row): ?>
-									<tr>
-										<td><?php echo htmlspecialchars(trim(($row['prefix'] ?? '') . ' ' . ($row['so_number'] ?? ''))); ?></td>
-										<td><?php echo format_stage_badge('order', $row['so_stage'] ?? ''); ?></td>
-										<td><?php echo htmlspecialchars($row['due_date'] ?? ''); ?></td>
-										<td><?php echo htmlspecialchars($row['delivery_date'] ?? ''); ?></td>
-										<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
-										<td>
-											<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=SalesOrders&action=DetailView&record=' . urlencode($row['id']); ?>">
-												<i class="fas fa-external-link-alt"></i> Öffnen
-											</a>
-										</td>
-									</tr>
-								<?php endforeach; ?>
-							</tbody>
-						</table>
-					</div>
-				</div>
-			</div>
 
 			<div class="card shadow-sm mb-3">
 				<div class="card-header py-2">
 					<strong>Verkaufte Produkte</strong> <span class="text-muted">(<?php echo count($soldProducts); ?>)</span>
 				</div>
-				<div class="card-body">
-					<div class="table-responsive">
-						<table id="soldProductsTable" class="table table-striped table-sm align-middle js-dt">
-							<thead>
-								<tr>
-									<th>Artikel</th>
-									<th>Stück</th>
-									<th>Umsatz</th>
-									<th>Letzter Preis</th>
-									<th>1CRM</th>
-								</tr>
-							</thead>
-							<tbody>
-								<?php foreach ($soldProducts as $row): ?>
+				<?php if (!empty($soldProducts)): ?>
+					<div class="card-body">
+						<div class="table-responsive">
+							<table id="soldProductsTable" class="table table-striped table-sm align-middle js-dt">
+								<thead>
 									<tr>
-										<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
-										<td><?php echo isset($row['qty_total']) ? number_format((float)$row['qty_total'], 2, ',', '.') : ''; ?></td>
-										<td><?php echo isset($row['amount_total']) ? number_format((float)$row['amount_total'], 2, ',', '.') : ''; ?></td>
-										<td><?php echo isset($row['unit_price_latest']) ? number_format((float)$row['unit_price_latest'], 2, ',', '.') : ''; ?></td>
-										<td>
-											<?php if (!empty($row['related_id'])): ?>
-												<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=ProductCatalog&action=DetailView&record=' . urlencode($row['related_id']); ?>">
-													<i class="fas fa-external-link-alt"></i> Öffnen
-												</a>
-											<?php endif; ?>
-										</td>
+										<th>Artikel</th>
+										<th>Stück</th>
+										<th>Umsatz</th>
+										<th>Letzter Preis</th>
+										<th>1CRM</th>
 									</tr>
-								<?php endforeach; ?>
-							</tbody>
-						</table>
+								</thead>
+								<tbody>
+									<?php foreach ($soldProducts as $row): ?>
+										<tr>
+											<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+											<td><?php echo isset($row['qty_total']) ? number_format((float)$row['qty_total'], 2, ',', '.') : ''; ?></td>
+											<td><?php echo isset($row['amount_total']) ? number_format((float)$row['amount_total'], 2, ',', '.') : ''; ?></td>
+											<td><?php echo isset($row['unit_price_latest']) ? number_format((float)$row['unit_price_latest'], 2, ',', '.') : ''; ?></td>
+											<td>
+												<?php if (!empty($row['related_id'])): ?>
+													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=ProductCatalog&action=DetailView&record=' . urlencode($row['related_id']); ?>">
+														<i class="fas fa-external-link-alt"></i> Öffnen
+													</a>
+												<?php endif; ?>
+											</td>
+										</tr>
+									<?php endforeach; ?>
+								</tbody>
+							</table>
+						</div>
 					</div>
-				</div>
+				<?php endif; ?>
 			</div>
 
 			<div class="row g-3 mb-3">
@@ -915,42 +1197,44 @@
 								<label class="form-check-label small" for="toggleCurrentActivities">Nur aktuelle</label>
 							</div>
 						</div>
-						<div class="card-body">
-							<div class="table-responsive">
-								<table id="activitiesTable" class="table table-striped table-sm align-middle js-dt">
-									<thead>
-										<tr>
-											<th>Typ</th>
-											<th>Titel</th>
-											<th>Status</th>
-											<th>Datum</th>
-											<th>Hinweis</th>
-											<th>1CRM</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($activities as $row): ?>
-											<?php
-												$type = (string)($row['activity_type'] ?? '');
-												$module = $type === 'Meeting' ? 'Meetings' : ($type === 'Task' ? 'Tasks' : 'Calls');
-											?>
+						<?php if (!empty($activities)): ?>
+							<div class="card-body">
+								<div class="table-responsive">
+									<table id="activitiesTable" class="table table-striped table-sm align-middle js-dt">
+										<thead>
 											<tr>
-												<td><?php echo htmlspecialchars($type); ?></td>
-												<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
-												<td><?php echo format_activity_status_badge($row['status'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['activity_date'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['activity_hint'] ?? ''); ?></td>
-												<td>
-													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=' . urlencode($module) . '&action=DetailView&record=' . urlencode($row['id']); ?>">
-														<i class="fas fa-external-link-alt"></i> Öffnen
-													</a>
-												</td>
+												<th>Typ</th>
+												<th>Titel</th>
+												<th>Status</th>
+												<th>Datum</th>
+												<th>Hinweis</th>
+												<th>1CRM</th>
 											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											<?php foreach ($activities as $row): ?>
+												<?php
+													$type = (string)($row['activity_type'] ?? '');
+													$module = $type === 'Meeting' ? 'Meetings' : ($type === 'Task' ? 'Tasks' : 'Calls');
+												?>
+												<tr>
+													<td><?php echo htmlspecialchars($type); ?></td>
+													<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+													<td><?php echo format_activity_status_badge($row['status'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['activity_date'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['activity_hint'] ?? ''); ?></td>
+													<td>
+														<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=' . urlencode($module) . '&action=DetailView&record=' . urlencode($row['id']); ?>">
+															<i class="fas fa-external-link-alt"></i> Öffnen
+														</a>
+													</td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								</div>
 							</div>
-						</div>
+						<?php endif; ?>
 					</div>
 				</div>
 				<div class="col-12 col-xxl-6">
@@ -964,43 +1248,133 @@
 								<label class="form-check-label small" for="toggleCurrentEmails">Nur aktuelle</label>
 							</div>
 						</div>
-						<div class="card-body">
-							<div class="table-responsive">
-								<table id="emailHistoryTable" class="table table-striped table-sm align-middle js-dt">
-									<thead>
-										<tr>
-											<th>Datum</th>
-											<th>Betreff</th>
-											<th>Von</th>
-											<th>Status</th>
-											<th>Ordner</th>
-											<th>1CRM</th>
-										</tr>
-									</thead>
-									<tbody>
-										<?php foreach ($emailHistory as $row): ?>
+						<?php if (!empty($emailHistory)): ?>
+							<div class="card-body">
+								<div class="table-responsive">
+									<table id="emailHistoryTable" class="table table-striped table-sm align-middle js-dt">
+										<thead>
 											<tr>
-												<td><?php echo htmlspecialchars($row['date_start'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['from_addr'] ?? ''); ?></td>
-												<td><?php echo format_email_status_badge($row['status'] ?? '', $row['type'] ?? ''); ?></td>
-												<td><?php echo htmlspecialchars($row['folder_name'] ?? ''); ?></td>
-												<td>
-													<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Emails&action=DetailView&record=' . urlencode($row['id']); ?>">
-														<i class="fas fa-external-link-alt"></i> Öffnen
-													</a>
-												</td>
+												<th>Datum</th>
+												<th>Betreff</th>
+												<th>Von</th>
+												<th>Status</th>
+												<th>Ordner</th>
+												<th>1CRM</th>
 											</tr>
-										<?php endforeach; ?>
-									</tbody>
-								</table>
+										</thead>
+										<tbody>
+											<?php foreach ($emailHistory as $row): ?>
+												<tr>
+													<td><?php echo htmlspecialchars($row['date_start'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['name'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['from_addr'] ?? ''); ?></td>
+													<td><?php echo format_email_status_badge($row['status'] ?? '', $row['type'] ?? ''); ?></td>
+													<td><?php echo htmlspecialchars($row['folder_name'] ?? ''); ?></td>
+													<td>
+														<a class="btn btn-sm btn-outline-success" target="_blank" rel="noopener" href="<?php echo 'https://addinol-lubeoil.at/crm/?module=Emails&action=DetailView&record=' . urlencode($row['id']); ?>">
+															<i class="fas fa-external-link-alt"></i> Öffnen
+														</a>
+													</td>
+												</tr>
+											<?php endforeach; ?>
+										</tbody>
+									</table>
+								</div>
 							</div>
+						<?php endif; ?>
+					</div>
+				</div>
+				</div>
+
+				<div class="modal fade" id="contactEditModal" tabindex="-1" aria-labelledby="contactEditModalLabel" aria-hidden="true">
+					<div class="modal-dialog modal-lg modal-dialog-scrollable">
+						<div class="modal-content">
+							<form method="post">
+								<div class="modal-header">
+									<h5 class="modal-title" id="contactEditModalLabel">Neuer Kontakt</h5>
+									<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+								</div>
+								<div class="modal-body">
+									<input type="hidden" name="action" value="save_contact">
+									<input type="hidden" name="contact_mode" id="contactMode" value="create">
+									<input type="hidden" name="contact_id" id="contactId" value="">
+									<input type="hidden" name="account_id" value="<?php echo htmlspecialchars($accountId); ?>">
+									<div class="row g-2">
+										<div class="col-sm-3">
+											<label class="form-label form-label-sm mb-0">Anrede</label>
+											<select class="form-select form-select-sm" name="salutation" id="contactSalutation">
+												<option value="Mr.">Herr</option>
+												<option value="Ms.">Frau</option>
+												<option value="Mrs.">Frau (Mrs.)</option>
+												<option value="Dr.">Dr.</option>
+											</select>
+										</div>
+										<div class="col-sm-4">
+											<label class="form-label form-label-sm mb-0">Vorname</label>
+											<input class="form-control form-control-sm" name="first_name" id="contactFirstName">
+										</div>
+										<div class="col-sm-5">
+											<label class="form-label form-label-sm mb-0">Nachname *</label>
+											<input class="form-control form-control-sm" name="last_name" id="contactLastName" required>
+										</div>
+										<div class="col-sm-4">
+											<label class="form-label form-label-sm mb-0">Position</label>
+											<input class="form-control form-control-sm" name="title" id="contactTitle">
+										</div>
+										<div class="col-sm-4">
+											<label class="form-label form-label-sm mb-0">Abteilung</label>
+											<input class="form-control form-control-sm" name="department" id="contactDepartment">
+										</div>
+										<div class="col-sm-4">
+											<label class="form-label form-label-sm mb-0">E-Mail</label>
+											<input class="form-control form-control-sm" type="email" name="email1" id="contactEmail1">
+										</div>
+										<div class="col-sm-6">
+											<label class="form-label form-label-sm mb-0">Telefon Arbeit</label>
+											<input class="form-control form-control-sm" name="phone_work" id="contactPhoneWork">
+										</div>
+										<div class="col-sm-6">
+											<label class="form-label form-label-sm mb-0">Mobil</label>
+											<input class="form-control form-control-sm" name="phone_mobile" id="contactPhoneMobile">
+										</div>
+										<div class="col-12">
+											<label class="form-label form-label-sm mb-0">Notiz</label>
+											<textarea class="form-control form-control-sm" name="description" id="contactDescription" rows="3"></textarea>
+										</div>
+									</div>
+								</div>
+								<div class="modal-footer">
+									<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Abbrechen</button>
+									<button type="submit" class="btn btn-primary">
+										<i class="fas fa-save"></i> Speichern
+									</button>
+								</div>
+							</form>
 						</div>
 					</div>
 				</div>
-			</div>
 
-		<?php endif; ?>
+				<?php $accountPopupText = trim((string)($firm['account_popup'] ?? '')); ?>
+				<?php if ($accountPopupText !== ''): ?>
+					<div class="modal fade" id="accountPopupModal" tabindex="-1" aria-labelledby="accountPopupModalLabel" aria-hidden="true">
+						<div class="modal-dialog">
+							<div class="modal-content">
+								<div class="modal-header">
+									<h5 class="modal-title" id="accountPopupModalLabel"><i class="fas fa-exclamation-circle me-2 text-warning"></i>Hinweis</h5>
+									<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Schließen"></button>
+								</div>
+								<div class="modal-body">
+									<?php echo nl2br(htmlspecialchars($accountPopupText)); ?>
+								</div>
+								<div class="modal-footer">
+									<button type="button" class="btn btn-primary" data-bs-dismiss="modal">Zur Kenntnis</button>
+								</div>
+							</div>
+						</div>
+					</div>
+				<?php endif; ?>
+
+			<?php endif; ?>
 
 	<?php else: ?>
 		<div class="row g-3">
@@ -1151,7 +1525,7 @@
 <script>
 document.addEventListener('DOMContentLoaded', () => {
 	const dtLang = { url: 'https://cdn.datatables.net/plug-ins/1.13.7/i18n/de-DE.json' };
-	if (document.getElementById('firmsTable')) {
+		if (document.getElementById('firmsTable')) {
 		$('#firmsTable').DataTable({
 			order: [[1, 'asc']],
 			pageLength: 25,
@@ -1174,6 +1548,13 @@ document.addEventListener('DOMContentLoaded', () => {
 	}
 	if (document.getElementById('ordersTable')) {
 		$('#ordersTable').DataTable({
+			order: [[2, 'desc']],
+			pageLength: 25,
+			language: dtLang
+		});
+	}
+	if (document.getElementById('purchaseOrdersTable')) {
+		$('#purchaseOrdersTable').DataTable({
 			order: [[2, 'desc']],
 			pageLength: 25,
 			language: dtLang
@@ -1297,9 +1678,71 @@ document.addEventListener('DOMContentLoaded', () => {
 				} catch (e) {
 					modalBodyEl.innerHTML = '<div class="alert alert-warning py-2 mb-0">Daten konnten nicht geladen werden.</div>';
 				}
+				});
 			});
-		});
-	}
+		}
+		const contactModalEl = document.getElementById('contactEditModal');
+		if (contactModalEl) {
+			const contactModal = new bootstrap.Modal(contactModalEl);
+			const modalTitleEl = document.getElementById('contactEditModalLabel');
+			const modeEl = document.getElementById('contactMode');
+			const idEl = document.getElementById('contactId');
+			const salutationEl = document.getElementById('contactSalutation');
+			const firstNameEl = document.getElementById('contactFirstName');
+			const lastNameEl = document.getElementById('contactLastName');
+			const titleEl = document.getElementById('contactTitle');
+			const departmentEl = document.getElementById('contactDepartment');
+			const email1El = document.getElementById('contactEmail1');
+			const phoneWorkEl = document.getElementById('contactPhoneWork');
+			const phoneMobileEl = document.getElementById('contactPhoneMobile');
+			const descriptionEl = document.getElementById('contactDescription');
+			const openCreateBtn = document.getElementById('openCreateContactModal');
+
+			const fillContactForm = (values) => {
+				if (modeEl) modeEl.value = values.mode || 'create';
+				if (idEl) idEl.value = values.id || '';
+				if (salutationEl) salutationEl.value = values.salutation || 'Mr.';
+				if (firstNameEl) firstNameEl.value = values.firstName || '';
+				if (lastNameEl) lastNameEl.value = values.lastName || '';
+				if (titleEl) titleEl.value = values.title || '';
+				if (departmentEl) departmentEl.value = values.department || '';
+				if (email1El) email1El.value = values.email1 || '';
+				if (phoneWorkEl) phoneWorkEl.value = values.phoneWork || '';
+				if (phoneMobileEl) phoneMobileEl.value = values.phoneMobile || '';
+				if (descriptionEl) descriptionEl.value = values.description || '';
+				if (modalTitleEl) modalTitleEl.textContent = values.mode === 'update' ? 'Kontakt bearbeiten' : 'Neuer Kontakt';
+			};
+
+			if (openCreateBtn) {
+				openCreateBtn.addEventListener('click', () => {
+					fillContactForm({
+						mode: 'create',
+						id: '',
+						salutation: 'Mr.'
+					});
+					contactModal.show();
+				});
+			}
+
+			document.querySelectorAll('.contact-edit-btn').forEach((btn) => {
+				btn.addEventListener('click', () => {
+					fillContactForm({
+						mode: 'update',
+						id: btn.getAttribute('data-contact-id') || '',
+						salutation: btn.getAttribute('data-salutation') || 'Mr.',
+						firstName: btn.getAttribute('data-first-name') || '',
+						lastName: btn.getAttribute('data-last-name') || '',
+						title: btn.getAttribute('data-title') || '',
+						department: btn.getAttribute('data-department') || '',
+						email1: btn.getAttribute('data-email1') || '',
+						phoneWork: btn.getAttribute('data-phone-work') || '',
+						phoneMobile: btn.getAttribute('data-phone-mobile') || '',
+						description: btn.getAttribute('data-description') || ''
+					});
+					contactModal.show();
+				});
+			});
+		}
 	document.querySelectorAll('.current-toggle').forEach((toggle) => {
 		toggle.addEventListener('change', () => {
 			const targetUrl = toggle.checked ? toggle.getAttribute('data-url-on') : toggle.getAttribute('data-url-off');
@@ -1308,6 +1751,11 @@ document.addEventListener('DOMContentLoaded', () => {
 			}
 		});
 	});
+	const accountPopupModalEl = document.getElementById('accountPopupModal');
+	if (accountPopupModalEl) {
+		const accountPopupModal = new bootstrap.Modal(accountPopupModalEl);
+		accountPopupModal.show();
+	}
 	const noteSurface = document.getElementById('localNoteSurface');
 	const noteHtmlField = document.getElementById('localNoteHtml');
 	if (noteSurface && noteHtmlField) {

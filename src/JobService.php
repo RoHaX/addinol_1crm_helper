@@ -908,6 +908,7 @@ class JobService
 
 	private static function executeConvertAbToInvoice(mysqli $db, array $job, array $payload): array
 	{
+		$deliveredStage = 'Delivered';
 		$salesOrderId = trim((string)($payload['sales_order_id'] ?? ''));
 		if ($salesOrderId === '' && ((string)($job['relation_type'] ?? '') === 'sales_order')) {
 			$salesOrderId = trim((string)($job['relation_id'] ?? ''));
@@ -948,6 +949,29 @@ class JobService
 			$existingInvStmt->execute();
 			$existingInvRes = $existingInvStmt->get_result();
 			if ($existingInv = $existingInvRes->fetch_assoc()) {
+				$existingInvoiceId = (string)($existingInv['id'] ?? '');
+				$today = date('Y-m-d');
+				$now = date('Y-m-d H:i:s');
+				$modUser = (string)($salesOrder['modified_user_id'] ?? '');
+
+				$updInv = $db->prepare('UPDATE invoice SET shipping_stage = ?, date_modified = ?, modified_user_id = ? WHERE id = ? AND deleted = 0 LIMIT 1');
+				if ($updInv && $existingInvoiceId !== '') {
+					$updInv->bind_param('ssss', $deliveredStage, $now, $modUser, $existingInvoiceId);
+					$updInv->execute();
+				}
+
+				$updSoDelivered = $db->prepare('UPDATE sales_orders
+					SET so_stage = ?, date_modified = ?, modified_user_id = ?,
+						delivery_date = CASE
+							WHEN delivery_date IS NULL OR delivery_date = "0000-00-00" THEN ?
+							ELSE delivery_date
+						END
+					WHERE id = ? AND deleted = 0 LIMIT 1');
+				if ($updSoDelivered) {
+					$updSoDelivered->bind_param('sssss', $deliveredStage, $now, $modUser, $today, $salesOrderId);
+					$updSoDelivered->execute();
+				}
+
 				$invNo = trim((string)($existingInv['prefix'] ?? '') . (string)($existingInv['invoice_number'] ?? ''));
 				return ['ok' => true, 'message' => 'Rechnung existiert bereits: ' . $invNo, 'invoice_id' => (string)$existingInv['id']];
 			}
@@ -1005,7 +1029,7 @@ class JobService
 				net_amount, net_amount_usdollar
 			) VALUES (
 				" . $esc($invoiceId) . ", " . $esc($now) . ", " . $esc($now) . ", " . $esc($salesOrder['modified_user_id'] ?? null) . ", " . $esc($salesOrder['assigned_user_id'] ?? null) . ", " . $esc($salesOrder['created_by'] ?? null) . ", 0,
-				" . $esc($salesOrder['currency_id'] ?? '-99') . ", " . $num($salesOrder['exchange_rate'] ?? 1) . ", " . $esc($invoicePrefix) . ", " . $invoiceNumber . ", " . $esc($salesOrderId) . ", " . $esc($salesOrder['so_stage'] ?? 'Pending') . ", 0, 0,
+					" . $esc($salesOrder['currency_id'] ?? '-99') . ", " . $num($salesOrder['exchange_rate'] ?? 1) . ", " . $esc($invoicePrefix) . ", " . $invoiceNumber . ", " . $esc($salesOrderId) . ", " . $esc($deliveredStage) . ", 0, 0,
 				" . $esc($salesOrder['name'] ?? '') . ", " . $esc($salesOrder['opportunity_id'] ?? null) . ", " . $esc($salesOrder['purchase_order_num'] ?? null) . ", " . $esc($today) . ", " . $esc($dueDate) . ", " . $esc($salesOrder['partner_id'] ?? null) . ", " . $esc($salesOrder['billing_account_id'] ?? null) . ", " . $esc($salesOrder['billing_contact_id'] ?? null) . ",
 				" . $esc($salesOrder['billing_address_street'] ?? null) . ", " . $esc($salesOrder['billing_address_city'] ?? null) . ", " . $esc($salesOrder['billing_address_state'] ?? null) . ", " . $esc($salesOrder['billing_address_postalcode'] ?? null) . ", " . $esc($salesOrder['billing_address_country'] ?? null) . ",
 				" . $esc($salesOrder['shipping_account_id'] ?? null) . ", " . $esc($salesOrder['shipping_contact_id'] ?? null) . ", " . $esc($salesOrder['shipping_address_street'] ?? null) . ", " . $esc($salesOrder['shipping_address_city'] ?? null) . ", " . $esc($salesOrder['shipping_address_state'] ?? null) . ",
@@ -1091,12 +1115,17 @@ class JobService
 				}
 			}
 
-			$soStage = 'Closed - Shipped and Invoiced';
-			$updSo = $db->prepare('UPDATE sales_orders SET so_stage = ?, date_modified = ?, modified_user_id = ? WHERE id = ? AND deleted = 0 LIMIT 1');
-			if ($updSo) {
-				$updSo->bind_param('ssss', $soStage, $now, $salesOrder['modified_user_id'], $salesOrderId);
-				$updSo->execute();
-			}
+				$updSo = $db->prepare('UPDATE sales_orders
+					SET so_stage = ?, date_modified = ?, modified_user_id = ?,
+						delivery_date = CASE
+							WHEN delivery_date IS NULL OR delivery_date = "0000-00-00" THEN ?
+							ELSE delivery_date
+						END
+					WHERE id = ? AND deleted = 0 LIMIT 1');
+				if ($updSo) {
+					$updSo->bind_param('sssss', $deliveredStage, $now, $salesOrder['modified_user_id'], $today, $salesOrderId);
+					$updSo->execute();
+				}
 
 			$db->commit();
 		} catch (Throwable $e) {
@@ -1170,6 +1199,7 @@ class JobService
 
 	private static function executeCrmTestEmail(mysqli $db, array $job, array $payload): array
 	{
+		$draftOnly = !empty($payload['draft_only']);
 		$accountId = trim((string)($payload['account_id'] ?? ''));
 		if ($accountId === '') {
 			$accountId = trim((string)($job['account_id'] ?? ''));
@@ -1216,17 +1246,37 @@ class JobService
 		if ($bodyHtml === '') {
 			$bodyHtml = '<p>JOB TEST-E-Mail</p>';
 		}
-
-		$folderId = self::resolveSentFolderId($db, $assignedUserId);
-		if ($folderId === '') {
-			return ['ok' => false, 'message' => 'Gesendet-Ordner nicht gefunden'];
+		$appendSignature = !array_key_exists('append_signature', $payload) || !empty($payload['append_signature']);
+		if ($appendSignature) {
+			$signature = self::resolveUserSignature($db, $assignedUserId);
+			$signatureText = trim((string)($signature['text'] ?? ''));
+			$signatureHtml = trim((string)($signature['html'] ?? ''));
+			if ($signatureText !== '') {
+				$bodyText = rtrim($bodyText) . "\n\n" . $signatureText;
+			}
+			if ($signatureHtml !== '') {
+				$bodyHtml = rtrim($bodyHtml) . '<br><br>' . $signatureHtml;
+			}
 		}
 
-		$sendResult = self::sendEmailNow($toAddr, $subject, $bodyText, $bodyHtml, $fromAddr);
-		$mailSent = !empty($sendResult['ok']);
-		$mailError = trim((string)($sendResult['error'] ?? ''));
-		$emailStatus = $mailSent ? 'sent' : 'send_error';
-		$sendErrorFlag = $mailSent ? 0 : 1;
+		$folderId = $draftOnly
+			? self::resolveDraftFolderId($db, $assignedUserId)
+			: self::resolveSentFolderId($db, $assignedUserId);
+		if ($folderId === '') {
+			return ['ok' => false, 'message' => $draftOnly ? 'Entwürfe-Ordner nicht gefunden' : 'Gesendet-Ordner nicht gefunden'];
+		}
+
+		$mailSent = false;
+		$mailError = '';
+		$emailStatus = 'draft';
+		$sendErrorFlag = 0;
+		if (!$draftOnly) {
+			$sendResult = self::sendEmailNow($toAddr, $subject, $bodyText, $bodyHtml, $fromAddr);
+			$mailSent = !empty($sendResult['ok']);
+			$mailError = trim((string)($sendResult['error'] ?? ''));
+			$emailStatus = $mailSent ? 'sent' : 'send_error';
+			$sendErrorFlag = $mailSent ? 0 : 1;
+		}
 
 		$emailId = self::generateGuid();
 		$now = date('Y-m-d H:i:s');
@@ -1283,6 +1333,10 @@ class JobService
 		} catch (Throwable $e) {
 			$db->rollback();
 			return ['ok' => false, 'message' => 'CRM Test-E-Mail fehlgeschlagen: ' . $e->getMessage()];
+		}
+
+		if ($draftOnly) {
+			return ['ok' => true, 'message' => 'CRM E-Mail-Entwurf angelegt: ' . $emailId, 'email_id' => $emailId];
 		}
 
 		if (!$mailSent) {
@@ -1366,6 +1420,56 @@ class JobService
 			}
 		}
 		return '';
+	}
+
+	private static function resolveDraftFolderId(mysqli $db, string $userId): string
+	{
+		$stmt = $db->prepare('SELECT id FROM emails_folders WHERE deleted = 0 AND name = "Entwürfe" AND user_id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('s', $userId);
+			$stmt->execute();
+			$res = $stmt->get_result();
+			if ($row = $res->fetch_assoc()) {
+				return (string)$row['id'];
+			}
+		}
+
+		$stmt2 = $db->prepare('SELECT id FROM emails_folders WHERE deleted = 0 AND name = "Entwürfe" AND reserved = 3 ORDER BY user_id DESC LIMIT 1');
+		if ($stmt2) {
+			$stmt2->execute();
+			$res2 = $stmt2->get_result();
+			if ($row2 = $res2->fetch_assoc()) {
+				return (string)$row2['id'];
+			}
+		}
+		return '';
+	}
+
+	private static function resolveUserSignature(mysqli $db, string $userId): array
+	{
+		$out = ['text' => '', 'html' => ''];
+		$stmt = $db->prepare('SELECT signature, signature_html FROM users_signatures WHERE deleted = 0 AND user_id = ? ORDER BY date_modified DESC LIMIT 1');
+		if (!$stmt) {
+			return $out;
+		}
+		$stmt->bind_param('s', $userId);
+		$stmt->execute();
+		$res = $stmt->get_result();
+		$row = $res ? $res->fetch_assoc() : null;
+		if (!$row) {
+			return $out;
+		}
+		$text = trim((string)($row['signature'] ?? ''));
+		$html = trim((string)($row['signature_html'] ?? ''));
+		if ($html === '' && $text !== '') {
+			$html = nl2br(htmlspecialchars($text, ENT_QUOTES));
+		}
+		if ($text === '' && $html !== '') {
+			$text = trim(strip_tags(str_replace(['<br>', '<br/>', '<br />'], "\n", $html)));
+		}
+		$out['text'] = $text;
+		$out['html'] = $html;
+		return $out;
 	}
 
 	private static function resolvePhpBinary(): string

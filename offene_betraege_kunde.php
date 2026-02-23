@@ -47,6 +47,7 @@
 			AND amount_due <> 0";
 		print "<div class='card shadow-sm mx-auto' style='max-width: 1200px;'>\n";
 		print "<div class='card-body'>\n";
+		print "<div class='d-flex justify-content-end mb-2'><a class='btn btn-sm btn-outline-warning' href='offene_betraege_pruefung.php?account_id=" . htmlspecialchars($account_id, ENT_QUOTES) . "' target='_blank'>Prüfseite öffnen</a></div>\n";
 		print "<div class='table-responsive'>\n";
 		print "\t<table id='offene-kunde-invoices' class='table table-sm table-striped table-hover align-middle'>\n";
 		print "\t<thead class='table-light'><tr><th>CRM</th><th>Rechnung</th><th>Fällig</th><th>Offen</th><th></th></tr></thead>\n";
@@ -79,8 +80,8 @@
 	print "<div class='card-body'>\n";
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='offene-betraege-table' class='table table-sm table-striped table-hover align-middle'>\n";
-	print "\t<thead class='table-light'><tr><th>CRM</th><th>Kunde</th><th>Ort</th><th>Offener Betrag</th><th></th><th></th></tr></thead>\n";
-	print "\t<tfoot class='table-light'><tr><th>CRM</th><th>Kunde</th><th>Ort</th><th>Offener Betrag</th><th></th><th></th></tr></tfoot>\n";
+	print "\t<thead class='table-light'><tr><th>CRM</th><th>Kunde</th><th>Ort</th><th>Offener Betrag</th><th>Details</th><th>Prüfung</th><th></th></tr></thead>\n";
+	print "\t<tfoot class='table-light'><tr><th>CRM</th><th>Kunde</th><th>Ort</th><th>Offener Betrag</th><th>Details</th><th>Prüfung</th><th></th></tr></tfoot>\n";
 	print "\t<tbody>\n";
 
 	if ($result = mysqli_query($link, $strSQL)) 
@@ -94,6 +95,7 @@
 			<td>".$row['billing_address_city']."</td>
 			<td align='right' data-order='".$row['balance']."'>".number_format($row['balance'], 2, ',', '.')."</td>
 			<td><button type='button' class='btn btn-sm btn-outline-primary konto-details' data-bs-toggle='modal' data-bs-target='#kontoDetailModal' data-account-id='".$accountId."' data-account-name=\"".htmlspecialchars($row['name'], ENT_QUOTES)."\">Details</button></td>
+			<td><a class='btn btn-sm btn-outline-warning' href='offene_betraege_pruefung.php?account_id=".$accountId."' target='_blank'>Prüfen</a></td>
 			<td>";
 			$balance = (float)$row['balance'];
 			if ($balance < 2 && $balance > -2) {
@@ -153,7 +155,7 @@
 				pageLength: 25,
 				lengthMenu: [10, 25, 50, 100],
 				order: [[3, 'desc']],
-				columnDefs: [{ targets: [0,4,5], orderable: false, searchable: false }],
+				columnDefs: [{ targets: [0,4,5,6], orderable: false, searchable: false }],
 				language: {
 					search: 'Suche:',
 					lengthMenu: '_MENU_ Einträge pro Seite',
