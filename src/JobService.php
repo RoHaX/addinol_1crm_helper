@@ -906,6 +906,78 @@ class JobService
 		return date('Y-m-d H:i:s');
 	}
 
+	private static function resolveInvoiceTerms(mysqli $db, array $salesOrder): string
+	{
+		$accountId = trim((string)($salesOrder['billing_account_id'] ?? ''));
+		if ($accountId !== '') {
+			$stmt = $db->prepare('SELECT default_terms FROM accounts WHERE id = ? AND deleted = 0 LIMIT 1');
+			if ($stmt) {
+				$stmt->bind_param('s', $accountId);
+				$stmt->execute();
+				$res = $stmt->get_result();
+				if ($row = $res->fetch_assoc()) {
+					$defaultTerms = trim((string)($row['default_terms'] ?? ''));
+					if ($defaultTerms !== '') {
+						return $defaultTerms;
+					}
+				}
+			}
+		}
+
+		$soTerms = trim((string)($salesOrder['terms'] ?? ''));
+		if ($soTerms !== '') {
+			return $soTerms;
+		}
+		return '';
+	}
+
+	private static function resolveInvoiceDueDate(array $salesOrder, string $invoiceDate, string $resolvedTerms): string
+	{
+		$invoiceDateNorm = self::normalizeDateOnly($invoiceDate) ?? date('Y-m-d');
+		$netDays = self::parseNetDaysFromTerms($resolvedTerms);
+		if ($netDays !== null && $netDays >= 0) {
+			$base = DateTimeImmutable::createFromFormat('Y-m-d', $invoiceDateNorm);
+			if ($base instanceof DateTimeImmutable) {
+				return $base->modify('+' . $netDays . ' day')->format('Y-m-d');
+			}
+		}
+
+		$fallbackDue = self::normalizeDateOnly((string)($salesOrder['due_date'] ?? ''));
+		return $fallbackDue ?? $invoiceDateNorm;
+	}
+
+	private static function parseNetDaysFromTerms(string $terms): ?int
+	{
+		$val = trim($terms);
+		if ($val === '') {
+			return null;
+		}
+
+		$patterns = [
+			'/\bnet(?:to)?\s*([0-9]{1,3})\s*(?:days?|tage?)?\b/i',
+			'/\b([0-9]{1,3})\s*(?:days?|tage?)\s*net(?:to)?\b/i',
+		];
+
+		foreach ($patterns as $pattern) {
+			if (preg_match($pattern, $val, $m)) {
+				return (int)$m[1];
+			}
+		}
+		return null;
+	}
+
+	private static function normalizeDateOnly(string $value): ?string
+	{
+		$val = trim($value);
+		if ($val === '' || $val === '0000-00-00') {
+			return null;
+		}
+		if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $val)) {
+			return null;
+		}
+		return $val;
+	}
+
 	private static function executeConvertAbToInvoice(mysqli $db, array $job, array $payload): array
 	{
 		$deliveredStage = 'Delivered';
@@ -1010,10 +1082,8 @@ class JobService
 			$numRow = $numRes->fetch_assoc();
 			$invoiceNumber = (int)($numRow['max_no'] ?? 0) + 1;
 
-			$dueDate = trim((string)($salesOrder['due_date'] ?? ''));
-			if ($dueDate === '' || $dueDate === '0000-00-00') {
-				$dueDate = $today;
-			}
+			$invoiceTerms = self::resolveInvoiceTerms($db, $salesOrder);
+			$dueDate = self::resolveInvoiceDueDate($salesOrder, $today, $invoiceTerms);
 
 			$insertInvoiceSql = "INSERT INTO invoice (
 				id, date_entered, date_modified, modified_user_id, assigned_user_id, created_by, deleted,
@@ -1036,7 +1106,7 @@ class JobService
 				" . $esc($salesOrder['shipping_address_postalcode'] ?? null) . ", " . $esc($salesOrder['shipping_address_country'] ?? null) . ", " . $esc($salesOrder['shipping_provider_id'] ?? null) . ", " . $esc($salesOrder['description'] ?? null) . ",
 				" . $num($salesOrder['amount'] ?? 0) . ", " . $num($salesOrder['amount_usdollar'] ?? 0) . ", " . $num($salesOrder['amount'] ?? 0) . ", " . $num($salesOrder['amount_usdollar'] ?? 0) . ",
 				" . $num($salesOrder['gross_profit_so'] ?? 0) . ", " . $num($salesOrder['gross_profit_so_usd'] ?? 0) . ", " . $num($salesOrder['subtotal'] ?? 0) . ", " . $num($salesOrder['subtotal_usd'] ?? 0) . ", " . $num($salesOrder['pretax'] ?? 0) . ", " . $num($salesOrder['pretax_usd'] ?? 0) . ",
-				" . $esc($salesOrder['terms'] ?? '') . ", " . $esc($salesOrder['tax_information'] ?? null) . ", " . $esc($salesOrder['show_components'] ?? '') . ", " . $intVal($salesOrder['tax_exempt'] ?? 0) . ", " . $intVal($salesOrder['discount_before_taxes'] ?? 0) . ", " . $esc($salesOrder['pricebook_id'] ?? null) . ",
+				" . $esc($invoiceTerms) . ", " . $esc($salesOrder['tax_information'] ?? null) . ", " . $esc($salesOrder['show_components'] ?? '') . ", " . $intVal($salesOrder['tax_exempt'] ?? 0) . ", " . $intVal($salesOrder['discount_before_taxes'] ?? 0) . ", " . $esc($salesOrder['pricebook_id'] ?? null) . ",
 				" . $esc($salesOrder['billing_address_statecode'] ?? null) . ", " . $esc($salesOrder['billing_address_countrycode'] ?? null) . ", " . $esc($salesOrder['shipping_address_statecode'] ?? null) . ", " . $esc($salesOrder['shipping_address_countrycode'] ?? null) . ",
 				" . $num($salesOrder['pretax'] ?? 0) . ", " . $num($salesOrder['pretax_usd'] ?? 0) . "
 			)";
