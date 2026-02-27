@@ -14,6 +14,12 @@
 - Database access must use `db.inc.php` (no new DB config files).
 - Keep changes minimal and consistent with existing PHP style.
 
+## 1CRM Core Safety
+
+- Do not modify 1CRM core files.
+- Changes to 1CRM core files are only allowed after explicit user confirmation in the current chat.
+- Prefer middleware/custom files in this project for all fixes and features.
+
 ## Idempotency Rules
 
 - `mw_tracked_mail`: unique (`mailbox`,`uid`) and `message_hash`.

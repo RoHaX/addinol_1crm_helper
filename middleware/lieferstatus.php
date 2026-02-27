@@ -304,7 +304,7 @@
 <div class="container-fluid py-3">
 	<div class="d-flex align-items-center justify-content-between mb-3">
 		<h1 class="h3 mb-0">Lieferstatus</h1>
-		<div class="d-flex gap-2">
+			<div class="d-none d-md-flex gap-2">
 			<?php $isExtractorRunning = !empty($extractStatus['running']); ?>
 			<form method="post" class="d-flex align-items-center gap-2">
 				<input type="hidden" name="action" value="reextract_refs">
@@ -378,16 +378,15 @@
 
 	<div class="table-responsive">
 		<table id="deliveryTable" class="table table-striped table-sm align-middle">
-			<thead>
-				<tr>
-					<th>Bestellung</th>
-					<th>Auftrag</th>
-					<th>Referenz</th>
-					<th>Dachser</th>
-					<th>Status</th>
-					<th>Auftrags-Status</th>
-					<th>Stand</th>
-					<th>Betrag</th>
+				<thead>
+					<tr>
+						<th>Bestellung / Auftrag</th>
+						<th>Referenz</th>
+						<th>Dachser</th>
+						<th>Status</th>
+						<th class="d-none d-md-table-cell">Auftrags-Status</th>
+						<th class="d-none d-md-table-cell">Stand</th>
+						<th class="d-none d-md-table-cell">Betrag</th>
 					<th>Aktionen</th>
 				</tr>
 			</thead>
@@ -413,24 +412,22 @@
 							$dachserStatusTsLabel = date('d.m.Y H:i', $ts);
 						}
 					?>
-						<tr>
+							<tr>
+								<td>
+									<div class="d-flex flex-wrap gap-1">
+										<a class="btn btn-sm btn-outline-success fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($purchaseOrderUrl, ENT_QUOTES); ?>">
+											<?php echo htmlspecialchars($orderNo); ?>
+										</a>
+										<?php if ($salesOrderNo !== '' && !empty($row['sales_order_id'])): ?>
+											<a class="btn btn-sm btn-outline-primary fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($salesOrderUrl, ENT_QUOTES); ?>">
+												<?php echo htmlspecialchars($salesOrderNo); ?>
+											</a>
+										<?php endif; ?>
+									</div>
+									<div class="text-muted small"><?php echo htmlspecialchars($row['name'] ?? ''); ?></div>
+								</td>
 							<td>
-								<a class="btn btn-sm btn-outline-success fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($purchaseOrderUrl, ENT_QUOTES); ?>">
-									<?php echo htmlspecialchars($orderNo); ?>
-								</a>
-								<div class="text-muted small"><?php echo htmlspecialchars($row['name'] ?? ''); ?></div>
-							</td>
-							<td>
-								<?php if ($salesOrderNo !== '' && !empty($row['sales_order_id'])): ?>
-									<a class="btn btn-sm btn-outline-primary fw-semibold" target="_blank" rel="noopener" href="<?php echo htmlspecialchars($salesOrderUrl, ENT_QUOTES); ?>">
-										<?php echo htmlspecialchars($salesOrderNo); ?>
-									</a>
-								<?php else: ?>
-									<span class="text-muted">-</span>
-								<?php endif; ?>
-						</td>
-						<td>
-							<?php if ($reference !== ''): ?>
+								<?php if ($reference !== ''): ?>
 								<code><?php echo htmlspecialchars($reference); ?></code>
 							<?php else: ?>
 								<span class="badge text-bg-danger"><i class="fas fa-exclamation-triangle me-1"></i>AT fehlt</span>
@@ -462,9 +459,9 @@
 							<?php endif; ?>
 						</td>
 						<td><?php echo format_stage_badge_local($row['shipping_stage'] ?? ''); ?></td>
-						<td><?php echo format_sales_order_stage_badge($row['so_stage'] ?? ''); ?></td>
-						<td><?php echo htmlspecialchars($row['date_modified'] ?? ''); ?></td>
-							<td><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
+							<td class="d-none d-md-table-cell"><?php echo format_sales_order_stage_badge($row['so_stage'] ?? ''); ?></td>
+							<td class="d-none d-md-table-cell"><?php echo htmlspecialchars($row['date_modified'] ?? ''); ?></td>
+								<td class="d-none d-md-table-cell"><?php echo isset($row['amount']) ? number_format((float)$row['amount'], 2, ',', '.') : ''; ?></td>
 							<td>
 								<div class="btn-group btn-group-sm" role="group">
 									<button type="button" class="btn btn-outline-dark api-status-btn" data-reference="<?php echo htmlspecialchars($copyValue, ENT_QUOTES); ?>" data-purchase-order-id="<?php echo htmlspecialchars((string)($row['id'] ?? ''), ENT_QUOTES); ?>" title="Lieferstatus via API prüfen">

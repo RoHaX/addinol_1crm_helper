@@ -100,14 +100,14 @@ class ImapClient
 	{
 		$this->ensureConnected();
 		$header = imap_fetchheader($this->stream, $uid, FT_UID);
-		$body = imap_body($this->stream, $uid, FT_UID);
+		$body = imap_body($this->stream, $uid, FT_UID | FT_PEEK);
 		return $header . "\r\n" . $body;
 	}
 
 	public function fetchAttachmentContent($uid, $partNumber, $encoding)
 	{
 		$this->ensureConnected();
-		$data = imap_fetchbody($this->stream, $uid, $partNumber, FT_UID);
+		$data = imap_fetchbody($this->stream, $uid, $partNumber, FT_UID | FT_PEEK);
 		return $this->decodePart($data, $encoding);
 	}
 
@@ -121,7 +121,7 @@ class ImapClient
 			foreach ($structure->parts as $index => $part) {
 				$partNumber = $partIndex ? $partIndex . '.' . ($index + 1) : (string)($index + 1);
 				if ($this->isTextPart($part)) {
-					return $this->decodePart(imap_fetchbody($this->stream, $uid, $partNumber, FT_UID), $part->encoding);
+					return $this->decodePart(imap_fetchbody($this->stream, $uid, $partNumber, FT_UID | FT_PEEK), $part->encoding);
 				}
 				if (!empty($part->parts)) {
 					$body = $this->extractBody($uid, $part, $partNumber);
@@ -132,7 +132,7 @@ class ImapClient
 			}
 		} else {
 			if ($this->isTextPart($structure)) {
-				return $this->decodePart(imap_body($this->stream, $uid, FT_UID), $structure->encoding);
+				return $this->decodePart(imap_body($this->stream, $uid, FT_UID | FT_PEEK), $structure->encoding);
 			}
 		}
 

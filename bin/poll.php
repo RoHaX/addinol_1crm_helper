@@ -389,6 +389,18 @@ function maybe_send_telegram_alert(MwLogger $logger, array $stats, string $summa
 	$mailErrors = (int)($stats['mail_errors'] ?? 0);
 	$mailboxErrors = (int)($stats['mailbox_errors'] ?? 0);
 	$hasErrors = ($mailErrors > 0 || $mailboxErrors > 0);
+	$enabledRaw = trim((string)(getenv('TG_NOTIFY_ENABLED') ?: getenv('TELEGRAM_NOTIFY_ENABLED') ?: '0'));
+	$enabledNorm = strtolower($enabledRaw);
+	$notifyEnabled = in_array($enabledNorm, ['1', 'true', 'yes', 'on'], true);
+	if (!$notifyEnabled) {
+		$logger->info('telegram alert skipped (disabled)', [
+			'new_tracked' => $newTracked,
+			'mail_errors' => $mailErrors,
+			'mailbox_errors' => $mailboxErrors,
+			'enabled_raw' => $enabledRaw,
+		]);
+		return;
+	}
 	$botToken = trim((string)(getenv('TG_BOT_TOKEN') ?: getenv('TELEGRAM_BOT_TOKEN') ?: ''));
 	$chatId = trim((string)(getenv('TG_CHAT_ID') ?: getenv('TELEGRAM_CHAT_ID') ?: ''));
 	$minNew = (int)(getenv('TG_NOTIFY_MIN_NEW') ?: 1);

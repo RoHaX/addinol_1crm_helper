@@ -978,9 +978,95 @@ class JobService
 		return $val;
 	}
 
+	private static function getConfigValue(mysqli $db, string $category, string $name): ?string
+	{
+		$stmt = $db->prepare('SELECT value FROM config WHERE category = ? AND name = ? LIMIT 1');
+		if (!$stmt) {
+			return null;
+		}
+		$stmt->bind_param('ss', $category, $name);
+		$stmt->execute();
+		$res = $stmt->get_result();
+		$row = $res ? $res->fetch_assoc() : null;
+		if (!is_array($row) || !array_key_exists('value', $row)) {
+			return null;
+		}
+		return (string)$row['value'];
+	}
+
+	private static function getSequencePrefix(mysqli $db, string $name, string $category = 'company', ?int $timestamp = null): string
+	{
+		$prefix = self::getConfigValue($db, $category, $name);
+		if ($prefix === null) {
+			return '';
+		}
+		$ts = $timestamp ?? time();
+		$replacements = [
+			'%Y' => date('Y', $ts),
+			'%y' => date('y', $ts),
+			'%M' => date('M', $ts),
+			'%m' => date('m', $ts),
+			'%W' => date('W', $ts),
+			'%o' => date('o', $ts),
+			'%d' => date('d', $ts),
+		];
+		return strtr($prefix, $replacements);
+	}
+
+	private static function nextSequenceValue(mysqli $db, string $name, string $category = 'company'): int
+	{
+		$cat = $db->real_escape_string($category);
+		$key = $db->real_escape_string($name);
+		$sql = "INSERT INTO config (category, name, value) VALUES "
+			. "('{$cat}','{$key}',(@seqval := 1)+1) "
+			. "ON DUPLICATE KEY UPDATE value=(@seqval := IF(value > 0, value, 1))+1";
+		if (!$db->query($sql)) {
+			throw new RuntimeException('config sequence update failed: ' . $db->error);
+		}
+		$res = $db->query('SELECT @seqval AS seqval');
+		if (!$res) {
+			throw new RuntimeException('config sequence read failed: ' . $db->error);
+		}
+		$row = $res->fetch_assoc();
+		return (int)($row['seqval'] ?? 1);
+	}
+
+	private static function ensureSequenceAtLeast(mysqli $db, string $name, int $nextValue, string $category = 'company'): void
+	{
+		$cat = $db->real_escape_string($category);
+		$key = $db->real_escape_string($name);
+		$target = max(1, $nextValue);
+		$sql = "INSERT INTO config (category, name, value) VALUES "
+			. "('{$cat}','{$key}',{$target}) "
+			. "ON DUPLICATE KEY UPDATE value = GREATEST(CAST(IFNULL(NULLIF(value, ''), '0') AS UNSIGNED), VALUES(value))";
+		if (!$db->query($sql)) {
+			throw new RuntimeException('config sequence sync failed: ' . $db->error);
+		}
+	}
+
+	private static function reserveInvoiceNumber(mysqli $db, string $invoicePrefix): int
+	{
+		$next = self::nextSequenceValue($db, 'invoice_number_sequence', 'company');
+		$maxStmt = $db->prepare('SELECT COALESCE(MAX(invoice_number), 0) AS max_no FROM invoice WHERE prefix = ? FOR UPDATE');
+		if (!$maxStmt) {
+			throw new RuntimeException('invoice number lock failed');
+		}
+		$maxStmt->bind_param('s', $invoicePrefix);
+		$maxStmt->execute();
+		$maxRes = $maxStmt->get_result();
+		$maxRow = $maxRes ? $maxRes->fetch_assoc() : null;
+		$maxNo = (int)($maxRow['max_no'] ?? 0);
+		if ($next <= $maxNo) {
+			$next = $maxNo + 1;
+			self::ensureSequenceAtLeast($db, 'invoice_number_sequence', $next + 1, 'company');
+		}
+		return $next;
+	}
+
 	private static function executeConvertAbToInvoice(mysqli $db, array $job, array $payload): array
 	{
 		$deliveredStage = 'Delivered';
+		$completedOrderStage = 'Closed - Shipped and Invoiced';
 		$salesOrderId = trim((string)($payload['sales_order_id'] ?? ''));
 		if ($salesOrderId === '' && ((string)($job['relation_type'] ?? '') === 'sales_order')) {
 			$salesOrderId = trim((string)($job['relation_id'] ?? ''));
@@ -1040,7 +1126,7 @@ class JobService
 						END
 					WHERE id = ? AND deleted = 0 LIMIT 1');
 				if ($updSoDelivered) {
-					$updSoDelivered->bind_param('sssss', $deliveredStage, $now, $modUser, $today, $salesOrderId);
+					$updSoDelivered->bind_param('sssss', $completedOrderStage, $now, $modUser, $today, $salesOrderId);
 					$updSoDelivered->execute();
 				}
 
@@ -1049,7 +1135,10 @@ class JobService
 			}
 		}
 
-		$invoicePrefix = 'RE' . date('Y') . '-';
+		$invoicePrefix = self::getSequencePrefix($db, 'invoice_prefix', 'company');
+		if ($invoicePrefix === '') {
+			$invoicePrefix = 'RE' . date('Y') . '-';
+		}
 		$invoiceNumber = 0;
 		$invoiceId = self::generateGuid();
 		$now = date('Y-m-d H:i:s');
@@ -1072,15 +1161,7 @@ class JobService
 
 		$db->begin_transaction();
 		try {
-			$numStmt = $db->prepare('SELECT COALESCE(MAX(invoice_number), 0) AS max_no FROM invoice WHERE prefix = ? FOR UPDATE');
-			if (!$numStmt) {
-				throw new RuntimeException('invoice number lock failed');
-			}
-			$numStmt->bind_param('s', $invoicePrefix);
-			$numStmt->execute();
-			$numRes = $numStmt->get_result();
-			$numRow = $numRes->fetch_assoc();
-			$invoiceNumber = (int)($numRow['max_no'] ?? 0) + 1;
+			$invoiceNumber = self::reserveInvoiceNumber($db, $invoicePrefix);
 
 			$invoiceTerms = self::resolveInvoiceTerms($db, $salesOrder);
 			$dueDate = self::resolveInvoiceDueDate($salesOrder, $today, $invoiceTerms);
@@ -1193,7 +1274,7 @@ class JobService
 						END
 					WHERE id = ? AND deleted = 0 LIMIT 1');
 				if ($updSo) {
-					$updSo->bind_param('sssss', $deliveredStage, $now, $salesOrder['modified_user_id'], $today, $salesOrderId);
+					$updSo->bind_param('sssss', $completedOrderStage, $now, $salesOrder['modified_user_id'], $today, $salesOrderId);
 					$updSo->execute();
 				}
 
@@ -1781,7 +1862,7 @@ class JobService
 	private static function sendTelegramRunNotificationIfEnabled(array $job, int $runId, string $status, string $triggerType, string $executedBy, string $resultMessage): void
 	{
 		$payload = json_decode((string)($job['payload_json'] ?? ''), true);
-		if (!is_array($payload) || empty($payload['notify_telegram'])) {
+		if (!is_array($payload) || !self::toBool($payload['notify_telegram'] ?? null)) {
 			return;
 		}
 
@@ -1820,6 +1901,27 @@ class JobService
 			. 'Ergebnis:' . "\n" . $resultShort;
 
 		self::sendTelegramMessage($botToken, $chatId, $message);
+	}
+
+	private static function toBool($value): bool
+	{
+		if (is_bool($value)) {
+			return $value;
+		}
+		if (is_int($value) || is_float($value)) {
+			return ((int)$value) !== 0;
+		}
+		if (is_string($value)) {
+			$v = strtolower(trim($value));
+			if ($v === '' || $v === '0' || $v === 'false' || $v === 'off' || $v === 'no') {
+				return false;
+			}
+			if ($v === '1' || $v === 'true' || $v === 'on' || $v === 'yes') {
+				return true;
+			}
+			return false;
+		}
+		return !empty($value);
 	}
 
 	private static function sendTelegramMessage(string $botToken, string $chatId, string $message): bool
