@@ -1,32 +1,52 @@
 ﻿<?php
 	$link = mysqli_connect('localhost', 'addinol_usr', 'lwT1e99~', 'addinol_crm');
 	mysqli_set_charset($link, "utf8");
-	
-	if (isset($_POST['absenden'])){
-		$strJahr = $_POST['cmbJahr'];
-	} else {
-		$strJahr = date('Y');
+
+	$currentYear = (int) date('Y');
+	$availableYears = [];
+	$yearResult = mysqli_query($link, "SELECT DISTINCT YEAR(invoice_date) AS jahr FROM invoice WHERE deleted = 0 AND invoice_date IS NOT NULL ORDER BY jahr DESC");
+	if ($yearResult) {
+		while ($yearRow = mysqli_fetch_assoc($yearResult)) {
+			$year = (int) ($yearRow['jahr'] ?? 0);
+			if ($year > 0) {
+				$availableYears[] = $year;
+			}
+		}
 	}
 
-	
-	/* Begin PIECHART 	*/
-	$strSQL = "SELECT Sum(invoice.amount) as Brutto,  Sum(invoice.pretax) as Netto, invoice.deleted, accounts.name, YEAR(invoice_date) as Jahr
-		FROM accounts 
+	if (!$availableYears) {
+		$availableYears[] = $currentYear;
+	}
+
+	$selectedYear = isset($_POST['absenden']) ? (int) ($_POST['cmbJahr'] ?? $currentYear) : $currentYear;
+	if (!in_array($selectedYear, $availableYears, true)) {
+		$selectedYear = $availableYears[0];
+	}
+
+	$arrPie = [];
+
+	/* Begin PIECHART */
+	$strSQL = "SELECT
+			SUM(invoice.amount) AS Brutto,
+			SUM(invoice.pretax) AS Netto,
+			accounts.id,
+			accounts.name
+		FROM accounts
 		INNER JOIN invoice ON accounts.id = invoice.billing_account_id
-		GROUP BY YEAR(invoice_date), accounts.name, invoice.deleted
-		HAVING (((invoice.deleted)=0) AND (Jahr=".$strJahr.")) 
-		ORDER BY Netto DESC;";
+		WHERE invoice.deleted = 0
+			AND YEAR(invoice.invoice_date) = " . $selectedYear . "
+		GROUP BY accounts.id, accounts.name
+		ORDER BY Netto DESC";
 	if ($result = mysqli_query($link, $strSQL)) {
-		while ($row = mysqli_fetch_assoc($result)) {	
+		while ($row = mysqli_fetch_assoc($result)) {
 			$arrPie[] = [
 				'Name' => $row['name'],
-				'Netto' => $row['Netto']			
+				'Netto' => (float) $row['Netto']
 			];
 		}
 	}
-	
-	/* 	END PIECHART */
-	
+
+	/* END PIECHART */
 ?>
 <!doctype html>
 <html lang="de">
@@ -50,7 +70,7 @@
 	foreach ($arrPie as $nr => $inhalt)
 	{
 		print ",";
-		$Key  = $inhalt['Name'];
+		$Key  = addslashes($inhalt['Name']);
 		$Netto  = $inhalt['Netto'];
 		echo "['$Key', $Netto]";
 	}
@@ -58,7 +78,7 @@
 	]);
 
 	var options = {
-	  title: 'Monatsumsatz'
+	  title: 'Kundenumsatz'
 	};
 
 	var chart = new google.visualization.PieChart(document.getElementById('piechart'));
@@ -76,9 +96,9 @@
 			<form action='umsatzliste.php' method='post' class="d-flex flex-wrap gap-2 align-items-center">
 				<select name='cmbJahr' class="form-select form-select-sm">
 					<?php
-					for ($i = 2015; $i <= 2025; $i++) {
-						$selected = $strJahr == $i ? 'selected' : '';
-						echo "<option value='$i' $selected>$i</option>";
+					foreach ($availableYears as $year) {
+						$selected = $selectedYear === (int) $year ? 'selected' : '';
+						echo "<option value='" . (int) $year . "' $selected>" . (int) $year . "</option>";
 					}
 					?>		
 				</select>
@@ -106,27 +126,30 @@
 	print "<div class='table-responsive'>\n";
 	print "\t<table id='umsatzliste-table' class='table table-sm table-striped table-hover align-middle'>\n";
 
-	$strSQL = "SELECT Count(invoice.id) as AnzRe, Sum(invoice.amount) as Brutto,  Sum(invoice.pretax) as Netto, invoice.deleted, accounts.id, accounts.name, YEAR(invoice_date) as Jahr
+	$strSQL = "SELECT Count(invoice.id) as AnzRe, Sum(invoice.amount) as Brutto,  Sum(invoice.pretax) as Netto, accounts.id, accounts.name, YEAR(invoice_date) as Jahr
 		FROM accounts 
 		INNER JOIN invoice ON accounts.id = invoice.billing_account_id
-		GROUP BY YEAR(invoice_date), accounts.name, invoice.deleted
-		HAVING (((invoice.deleted)=0) AND (Jahr=".$strJahr.")) 
+		WHERE invoice.deleted = 0
+			AND YEAR(invoice.invoice_date) = " . $selectedYear . "
+		GROUP BY YEAR(invoice_date), accounts.id, accounts.name
 		ORDER BY Netto DESC;";
 
 	print "\t<thead class='table-light'><tr><th>Kunde</th><th>Anz.RE</th><th>Brutto</th><th>Netto</th><th></th></tr></thead>\n";
 	print "\t<tfoot class='table-light'><tr><th>Kunde</th><th>Anz.RE</th><th>Brutto</th><th>Netto</th><th></th></tr></tfoot>\n";
-	print "\t<tbody>\n";
-	if ($result = mysqli_query($link, $strSQL)) {
-		while ($row = mysqli_fetch_assoc($result)) {	
-			print "\t<tr>
-			<td><a href='https://addinol-lubeoil.at/crm/index.php?module=Accounts&action=DetailView&record=".$row['id']."' target='_blank'>".$row['name']."</a></td>
-			<td>".$row['AnzRe']."</td>
-			<td align='right'>".number_format($row['Brutto'], 2, ',', '.')."</td>
-			<td align='right'>".number_format($row['Netto'], 2, ',', '.')."</td>
-			<td><button type='button' class='btn btn-sm btn-outline-primary kunde-details' data-bs-toggle='modal' data-bs-target='#kundeArtikelModal' data-account-id='".$row['id']."' data-account-name=\"".htmlspecialchars($row['name'], ENT_QUOTES)."\">Details</button></td>";
-			print "</tr>\n";
+		print "\t<tbody>\n";
+		if ($result = mysqli_query($link, $strSQL)) {
+			while ($row = mysqli_fetch_assoc($result)) {	
+				$bruttoRaw = number_format((float) $row['Brutto'], 2, '.', '');
+				$nettoRaw = number_format((float) $row['Netto'], 2, '.', '');
+				print "\t<tr>
+				<td><a href='https://addinol-lubeoil.at/crm/index.php?module=Accounts&action=DetailView&record=".$row['id']."' target='_blank'>".$row['name']."</a></td>
+				<td>".$row['AnzRe']."</td>
+				<td align='right' data-order='".$bruttoRaw."'>".number_format((float) $row['Brutto'], 2, ',', '.')."</td>
+				<td align='right' data-order='".$nettoRaw."'>".number_format((float) $row['Netto'], 2, ',', '.')."</td>
+				<td><button type='button' class='btn btn-sm btn-outline-primary kunde-details' data-bs-toggle='modal' data-bs-target='#kundeArtikelModal' data-account-id='".$row['id']."' data-account-name=\"".htmlspecialchars($row['name'], ENT_QUOTES)."\">Details</button></td>";
+				print "</tr>\n";
+			}
 		}
-	}
 	
 	print "\t</tbody>\n";
 	print "\t</table>\n";

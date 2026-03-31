@@ -28,6 +28,495 @@ function inv_fetch_all(mysqli $db, string $sql, string $types = '', array $param
 	return $out;
 }
 
+function inv_fetch_one(mysqli $db, string $sql, string $types = '', array $params = []): ?array {
+	$rows = inv_fetch_all($db, $sql, $types, $params);
+	return $rows[0] ?? null;
+}
+
+function inv_normalize_money($value): ?float {
+	$value = trim((string)$value);
+	if ($value === '') {
+		return null;
+	}
+	$value = str_replace([' ', "\u{00A0}"], '', $value);
+	if (strpos($value, ',') !== false) {
+		$value = str_replace('.', '', $value);
+		$value = str_replace(',', '.', $value);
+	}
+	if (!is_numeric($value)) {
+		return null;
+	}
+	return round((float)$value, 2);
+}
+
+function inv_normalize_qty($value): ?float {
+	$money = inv_normalize_money($value);
+	if ($money === null) {
+		return null;
+	}
+	return (float)$money;
+}
+
+function inv_sync_account_balance(mysqli $db, string $accountId): void {
+	if ($accountId === '') {
+		return;
+	}
+	$sumRow = inv_fetch_one(
+		$db,
+		"SELECT COALESCE(SUM(amount_due), 0) AS open_sum
+		 FROM invoice
+		 WHERE deleted = 0 AND billing_account_id = ?",
+		's',
+		[$accountId]
+	);
+	$openSum = round((float)($sumRow['open_sum'] ?? 0), 2);
+	$stmt = $db->prepare('UPDATE accounts SET balance = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+	if ($stmt) {
+		$stmt->bind_param('ds', $openSum, $accountId);
+		$stmt->execute();
+		$stmt->close();
+	}
+}
+
+function inv_recalculate_totals(mysqli $db, string $invoiceId): void {
+	$groups = inv_fetch_all(
+		$db,
+		"SELECT id
+		 FROM invoice_line_groups
+		 WHERE deleted = 0 AND parent_id = ?
+		 ORDER BY position ASC, id ASC",
+		's',
+		[$invoiceId]
+	);
+
+	$pretax = 0.0;
+	$total = 0.0;
+
+	foreach ($groups as $group) {
+		$groupId = (string)($group['id'] ?? '');
+		if ($groupId === '') {
+			continue;
+		}
+
+		$lineSumRow = inv_fetch_one(
+			$db,
+			"SELECT COALESCE(SUM(ext_price), 0) AS subtotal
+			 FROM invoice_lines
+			 WHERE deleted = 0 AND invoice_id = ? AND line_group_id = ?",
+			'ss',
+			[$invoiceId, $groupId]
+		);
+		$groupSubtotal = round((float)($lineSumRow['subtotal'] ?? 0), 2);
+
+		$adjRows = inv_fetch_all(
+			$db,
+			"SELECT id, type, rate, amount, line_id
+			 FROM invoice_adjustments
+			 WHERE deleted = 0 AND invoice_id = ? AND line_group_id = ?
+			 ORDER BY position ASC, id ASC",
+			'ss',
+			[$invoiceId, $groupId]
+		);
+
+		$groupTotal = $groupSubtotal;
+		foreach ($adjRows as $adj) {
+			$type = trim((string)($adj['type'] ?? ''));
+			$lineId = trim((string)($adj['line_id'] ?? ''));
+			$rate = (float)($adj['rate'] ?? 0);
+			$amount = (float)($adj['amount'] ?? 0);
+			$newAmount = $amount;
+
+			if (($type === 'StandardTax' || $type === 'TaxedShipping') && $lineId === '') {
+				if ($type === 'StandardTax') {
+					$newAmount = round($groupSubtotal * ($rate / 100), 2);
+				} else {
+					$newAmount = round($amount, 2);
+				}
+				$stmtAdj = $db->prepare('UPDATE invoice_adjustments SET amount = ?, amount_usd = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+				if ($stmtAdj) {
+					$stmtAdj->bind_param('dds', $newAmount, $newAmount, $adj['id']);
+					$stmtAdj->execute();
+					$stmtAdj->close();
+				}
+				$groupTotal += $newAmount;
+			}
+		}
+
+		$groupTotal = round($groupTotal, 2);
+		$pretax += $groupSubtotal;
+		$total += $groupTotal;
+
+		$stmtGroup = $db->prepare('UPDATE invoice_line_groups SET subtotal = ?, subtotal_usd = ?, total = ?, total_usd = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+		if ($stmtGroup) {
+			$stmtGroup->bind_param('dddds', $groupSubtotal, $groupSubtotal, $groupTotal, $groupTotal, $groupId);
+			$stmtGroup->execute();
+			$stmtGroup->close();
+		}
+	}
+
+	$pretax = round($pretax, 2);
+	$total = round($total, 2);
+
+	$paymentsRow = inv_fetch_one(
+		$db,
+		"SELECT COALESCE(SUM(ip.amount), 0) AS paid_sum
+		 FROM invoices_payments ip
+		 WHERE ip.deleted = 0 AND ip.invoice_id = ?",
+		's',
+		[$invoiceId]
+	);
+	$paidSum = round((float)($paymentsRow['paid_sum'] ?? 0), 2);
+	$amountDue = round($total - $paidSum, 2);
+
+	$stmtInv = $db->prepare('UPDATE invoice
+		SET amount = ?, amount_usdollar = ?, amount_due = ?, amount_due_usdollar = ?,
+			subtotal = ?, subtotal_usd = ?, pretax = ?, pretax_usd = ?,
+			net_amount = ?, net_amount_usdollar = ?, date_modified = NOW()
+		WHERE id = ? AND deleted = 0
+		LIMIT 1');
+	if ($stmtInv) {
+		$stmtInv->bind_param('dddddddddds', $total, $total, $amountDue, $amountDue, $pretax, $pretax, $pretax, $pretax, $pretax, $pretax, $invoiceId);
+		$stmtInv->execute();
+		$stmtInv->close();
+	}
+}
+
+function inv_sync_comments_from_sales_order(mysqli $db, string $invoiceId, string $salesOrderId, array $groupMap = []): void {
+	$existingComments = inv_fetch_all(
+		$db,
+		"SELECT id FROM invoice_comments WHERE deleted = 0 AND invoice_id = ?",
+		's',
+		[$invoiceId]
+	);
+	foreach ($existingComments as $row) {
+		$stmtDel = $db->prepare('UPDATE invoice_comments SET deleted = 1, date_modified = NOW() WHERE id = ? LIMIT 1');
+		if ($stmtDel) {
+			$stmtDel->bind_param('s', $row['id']);
+			$stmtDel->execute();
+			$stmtDel->close();
+		}
+	}
+
+	$srcComments = inv_fetch_all(
+		$db,
+		"SELECT *
+		 FROM sales_order_comments
+		 WHERE deleted = 0 AND sales_orders_id = ?
+		 ORDER BY position ASC, id ASC",
+		's',
+		[$salesOrderId]
+	);
+	$commentMap = [];
+	$commentParentMap = [];
+	foreach ($srcComments as $src) {
+		$newCommentId = md5(uniqid((string)mt_rand(), true));
+		$newCommentId = substr($newCommentId, 0, 8) . '-' . substr($newCommentId, 8, 4) . '-' . substr($newCommentId, 12, 4) . '-' . substr($newCommentId, 16, 4) . '-' . substr($newCommentId, 20, 12);
+		$oldGroupId = (string)($src['line_group_id'] ?? '');
+		$newGroupId = $groupMap[$oldGroupId] ?? $oldGroupId;
+		$stmt = $db->prepare('INSERT INTO invoice_comments
+			(id, date_entered, date_modified, deleted, invoice_id, line_group_id, name, position, parent_id, body)
+			VALUES (?, NOW(), NOW(), 0, ?, ?, ?, ?, NULL, ?)');
+		if ($stmt) {
+			$stmt->bind_param('ssssis', $newCommentId, $invoiceId, $newGroupId, $src['name'], $src['position'], $src['body']);
+			$stmt->execute();
+			$stmt->close();
+		}
+		$oldCommentId = (string)($src['id'] ?? '');
+		$commentMap[$oldCommentId] = $newCommentId;
+		$commentParentMap[$oldCommentId] = trim((string)($src['parent_id'] ?? ''));
+	}
+
+	foreach ($commentParentMap as $oldCommentId => $oldParentId) {
+		if ($oldParentId === '' || !isset($commentMap[$oldCommentId]) || !isset($commentMap[$oldParentId])) {
+			continue;
+		}
+		$stmt = $db->prepare('UPDATE invoice_comments SET parent_id = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$newParentId = $commentMap[$oldParentId];
+			$newCommentId = $commentMap[$oldCommentId];
+			$stmt->bind_param('ss', $newParentId, $newCommentId);
+			$stmt->execute();
+			$stmt->close();
+		}
+	}
+}
+
+function inv_save_manual_lines(mysqli $db, string $invoiceId, array $lineInput): int {
+	$lineRows = inv_fetch_all(
+		$db,
+		"SELECT id, quantity, list_price, unit_price, pricing_adjust_id
+		 FROM invoice_lines
+		 WHERE deleted = 0 AND invoice_id = ?",
+		's',
+		[$invoiceId]
+	);
+	$lineMap = [];
+	foreach ($lineRows as $row) {
+		$lineMap[(string)$row['id']] = $row;
+	}
+
+	$updated = 0;
+	foreach ($lineInput as $lineId => $row) {
+		$lineId = trim((string)$lineId);
+		if ($lineId === '' || !isset($lineMap[$lineId]) || !is_array($row)) {
+			continue;
+		}
+
+		$current = $lineMap[$lineId];
+		$name = trim((string)($row['name'] ?? $current['name'] ?? ''));
+		$quantity = inv_normalize_qty($row['quantity'] ?? $current['quantity'] ?? null);
+		$listPrice = inv_normalize_money($row['list_price'] ?? $current['list_price'] ?? null);
+		$discountRate = inv_normalize_money($row['discount_rate'] ?? null);
+
+		if ($quantity === null) {
+			$quantity = (float)($current['quantity'] ?? 0);
+		}
+		if ($listPrice === null) {
+			$listPrice = (float)($current['list_price'] ?? 0);
+		}
+
+		$pricingAdjustId = trim((string)($current['pricing_adjust_id'] ?? ''));
+		$unitPrice = round($listPrice, 2);
+		if ($pricingAdjustId !== '') {
+			$adj = inv_fetch_one(
+				$db,
+				"SELECT id, type, rate, amount
+				 FROM invoice_adjustments
+				 WHERE deleted = 0 AND id = ?
+				 LIMIT 1",
+				's',
+				[$pricingAdjustId]
+			);
+			if ($adj) {
+				$type = trim((string)($adj['type'] ?? ''));
+				if ($discountRate !== null && ($type === 'PercentDiscount' || $type === 'FixedDiscount' || $type === 'Fixed')) {
+					$newRate = $discountRate;
+					$stmtAdj = $db->prepare('UPDATE invoice_adjustments SET rate = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+					if ($stmtAdj) {
+						$stmtAdj->bind_param('ds', $newRate, $pricingAdjustId);
+						$stmtAdj->execute();
+						$stmtAdj->close();
+					}
+					if ($type === 'PercentDiscount') {
+						$unitPrice = round($listPrice * (1 - ($newRate / 100)), 2);
+					} elseif ($type === 'FixedDiscount' || $type === 'Fixed') {
+						$unitPrice = round($listPrice - $newRate, 2);
+					}
+				} elseif ($type === 'PercentDiscount') {
+					$unitPrice = round($listPrice * (1 - (((float)($adj['rate'] ?? 0)) / 100)), 2);
+				} elseif ($type === 'FixedDiscount' || $type === 'Fixed') {
+					$unitPrice = round($listPrice - (float)($adj['rate'] ?? 0), 2);
+				}
+			}
+		}
+
+		$extPrice = round($quantity * $unitPrice, 2);
+		$stmtLine = $db->prepare('UPDATE invoice_lines
+			SET name = ?, quantity = ?, ext_quantity = ?, list_price = ?, list_price_usd = ?,
+				unit_price = ?, unit_price_usd = ?, std_unit_price = ?, std_unit_price_usd = ?,
+				ext_price = ?, ext_price_usd = ?, net_price = ?, net_price_usd = ?, date_modified = NOW()
+			WHERE id = ? AND invoice_id = ? AND deleted = 0
+			LIMIT 1');
+		if ($stmtLine) {
+			$stmtLine->bind_param(
+				'sddddddddddddss',
+				$name,
+				$quantity,
+				$quantity,
+				$listPrice,
+				$listPrice,
+				$unitPrice,
+				$unitPrice,
+				$unitPrice,
+				$unitPrice,
+				$extPrice,
+				$extPrice,
+				$extPrice,
+				$extPrice,
+				$lineId,
+				$invoiceId
+			);
+			$stmtLine->execute();
+			$stmtLine->close();
+			$updated++;
+		}
+	}
+
+	inv_recalculate_totals($db, $invoiceId);
+	return $updated;
+}
+
+function inv_sync_from_sales_order(mysqli $db, string $invoiceId, string $salesOrderId): bool {
+	if ($invoiceId === '' || $salesOrderId === '') {
+		return false;
+	}
+
+	$srcGroups = inv_fetch_all(
+		$db,
+		"SELECT * FROM sales_order_line_groups WHERE parent_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$salesOrderId]
+	);
+	$dstGroups = inv_fetch_all(
+		$db,
+		"SELECT * FROM invoice_line_groups WHERE parent_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$invoiceId]
+	);
+	$srcGroupByPos = [];
+	$dstGroupByPos = [];
+	foreach ($srcGroups as $row) {
+		$srcGroupByPos[(string)$row['position']] = $row;
+	}
+	foreach ($dstGroups as $row) {
+		$dstGroupByPos[(string)$row['position']] = $row;
+	}
+	$groupMap = [];
+	foreach ($dstGroupByPos as $position => $dst) {
+		if (!isset($srcGroupByPos[$position])) {
+			continue;
+		}
+		$src = $srcGroupByPos[$position];
+		$groupMap[(string)$src['id']] = (string)$dst['id'];
+		$stmt = $db->prepare('UPDATE invoice_line_groups
+			SET name = ?, status = ?, pricing_method = ?, pricing_percentage = ?,
+				cost = ?, cost_usd = ?, subtotal = ?, subtotal_usd = ?, total = ?, total_usd = ?, date_modified = NOW()
+			WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('sssddddddds', $src['name'], $src['status'], $src['pricing_method'], $src['pricing_percentage'], $src['cost'], $src['cost_usd'], $src['subtotal'], $src['subtotal_usd'], $src['total'], $src['total_usd'], $dst['id']);
+			$stmt->execute();
+			$stmt->close();
+		}
+	}
+
+	$srcLines = inv_fetch_all(
+		$db,
+		"SELECT * FROM sales_order_lines WHERE sales_orders_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$salesOrderId]
+	);
+	$dstLines = inv_fetch_all(
+		$db,
+		"SELECT * FROM invoice_lines WHERE invoice_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$invoiceId]
+	);
+	$srcLineByPos = [];
+	$dstLineByPos = [];
+	$lineIdMap = [];
+	foreach ($srcLines as $row) {
+		$srcLineByPos[(string)$row['position']] = $row;
+	}
+	foreach ($dstLines as $row) {
+		$dstLineByPos[(string)$row['position']] = $row;
+	}
+	foreach ($dstLineByPos as $position => $dst) {
+		if (!isset($srcLineByPos[$position])) {
+			continue;
+		}
+		$src = $srcLineByPos[$position];
+		$lineIdMap[(string)$src['id']] = (string)$dst['id'];
+		$stmt = $db->prepare('UPDATE invoice_lines
+			SET pricing_adjust_id = ?, name = ?, parent_id = ?, quantity = ?, ext_quantity = ?,
+				related_type = ?, related_id = ?, mfr_part_no = ?, serial_no = ?, serial_numbers = ?,
+				tax_class_id = ?, sum_of_components = ?, cost_price = ?, cost_price_usd = ?,
+				list_price = ?, list_price_usd = ?, unit_price = ?, unit_price_usd = ?,
+				std_unit_price = ?, std_unit_price_usd = ?, ext_price = ?, ext_price_usd = ?,
+				net_price = ?, net_price_usd = ?, pp_lineitem_id = ?, date_modified = NOW()
+			WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('sssddssssssidddddddddddsss', $src['pricing_adjust_id'], $src['name'], $src['parent_id'], $src['quantity'], $src['ext_quantity'], $src['related_type'], $src['related_id'], $src['mfr_part_no'], $src['serial_no'], $src['serial_numbers'], $src['tax_class_id'], $src['sum_of_components'], $src['cost_price'], $src['cost_price_usd'], $src['list_price'], $src['list_price_usd'], $src['unit_price'], $src['unit_price_usd'], $src['std_unit_price'], $src['std_unit_price_usd'], $src['ext_price'], $src['ext_price_usd'], $src['net_price'], $src['net_price_usd'], $src['id'], $dst['id']);
+			$stmt->execute();
+			$stmt->close();
+		}
+	}
+
+	$srcAdj = inv_fetch_all(
+		$db,
+		"SELECT * FROM sales_order_adjustments WHERE sales_orders_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$salesOrderId]
+	);
+	$dstAdj = inv_fetch_all(
+		$db,
+		"SELECT * FROM invoice_adjustments WHERE invoice_id = ? AND deleted = 0 ORDER BY position ASC, id ASC",
+		's',
+		[$invoiceId]
+	);
+	$srcAdjByPos = [];
+	$dstAdjByPos = [];
+	$adjustIdMap = [];
+	foreach ($srcAdj as $row) {
+		$srcAdjByPos[(string)$row['position']] = $row;
+	}
+	foreach ($dstAdj as $row) {
+		$dstAdjByPos[(string)$row['position']] = $row;
+	}
+	foreach ($dstAdjByPos as $position => $dst) {
+		if (!isset($srcAdjByPos[$position])) {
+			continue;
+		}
+		$src = $srcAdjByPos[$position];
+		$newLineId = null;
+		$srcLineId = trim((string)($src['line_id'] ?? ''));
+		if ($srcLineId !== '' && isset($lineIdMap[$srcLineId])) {
+			$newLineId = $lineIdMap[$srcLineId];
+		}
+		$stmt = $db->prepare('UPDATE invoice_adjustments
+			SET line_id = ?, name = ?, related_type = ?, related_id = ?, rate = ?, type = ?,
+				amount = ?, amount_usd = ?, tax_class_id = ?, pp_lineadjust_id = ?, date_modified = NOW()
+			WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('ssssdsddsss', $newLineId, $src['name'], $src['related_type'], $src['related_id'], $src['rate'], $src['type'], $src['amount'], $src['amount_usd'], $src['tax_class_id'], $src['id'], $dst['id']);
+			$stmt->execute();
+			$stmt->close();
+		}
+		$adjustIdMap[(string)$src['id']] = (string)$dst['id'];
+	}
+
+	foreach ($dstLineByPos as $position => $dst) {
+		if (!isset($srcLineByPos[$position])) {
+			continue;
+		}
+		$oldAdjustId = trim((string)($srcLineByPos[$position]['pricing_adjust_id'] ?? ''));
+		if ($oldAdjustId === '' || !isset($adjustIdMap[$oldAdjustId])) {
+			continue;
+		}
+		$newAdjustId = $adjustIdMap[$oldAdjustId];
+		$stmt = $db->prepare('UPDATE invoice_lines SET pricing_adjust_id = ?, date_modified = NOW() WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('ss', $newAdjustId, $dst['id']);
+			$stmt->execute();
+			$stmt->close();
+		}
+	}
+
+	$so = inv_fetch_one(
+		$db,
+		"SELECT amount, amount_usdollar, subtotal, subtotal_usd, pretax, pretax_usd, gross_profit_so, gross_profit_so_usd
+		 FROM sales_orders WHERE id = ? LIMIT 1",
+		's',
+		[$salesOrderId]
+	);
+	if ($so) {
+		$stmt = $db->prepare('UPDATE invoice
+			SET amount = ?, amount_usdollar = ?, amount_due = ?, amount_due_usdollar = ?,
+				subtotal = ?, subtotal_usd = ?, pretax = ?, pretax_usd = ?,
+				gross_profit = ?, gross_profit_usdollar = ?,
+				net_amount = ?, net_amount_usdollar = ?, date_modified = NOW()
+			WHERE id = ? LIMIT 1');
+		if ($stmt) {
+			$stmt->bind_param('dddddddddddds', $so['amount'], $so['amount_usdollar'], $so['amount'], $so['amount_usdollar'], $so['subtotal'], $so['subtotal_usd'], $so['pretax'], $so['pretax_usd'], $so['gross_profit_so'], $so['gross_profit_so_usd'], $so['pretax'], $so['pretax_usd'], $invoiceId);
+			$stmt->execute();
+			$stmt->close();
+		}
+	}
+
+	inv_sync_comments_from_sales_order($db, $invoiceId, $salesOrderId, $groupMap);
+	inv_recalculate_totals($db, $invoiceId);
+	return true;
+}
+
 function inv_email_status_de(?string $status, ?string $type): string {
 	$statusRaw = trim((string)$status);
 	$typeRaw = trim((string)$type);
@@ -168,8 +657,57 @@ function inv_stage_badge(?string $stage): string {
 }
 
 $invoiceId = trim((string)($_GET['invoice_id'] ?? ''));
+$requestMethod = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
+$flash = '';
+$errors = [];
+
+if ($requestMethod === 'POST') {
+	$invoiceId = trim((string)($_POST['invoice_id'] ?? $invoiceId));
+	$action = trim((string)($_POST['action'] ?? ''));
+	if ($invoiceId !== '') {
+		$invoiceBase = inv_fetch_one(
+			$mysqli,
+			"SELECT id, from_so_id, billing_account_id
+			 FROM invoice
+			 WHERE deleted = 0 AND id = ?
+			 LIMIT 1",
+			's',
+			[$invoiceId]
+		);
+		if (!$invoiceBase) {
+			$errors[] = 'Rechnung nicht gefunden.';
+		} else {
+			$mysqli->begin_transaction();
+			try {
+				if ($action === 'save_positions') {
+					$updatedCount = inv_save_manual_lines($mysqli, $invoiceId, $_POST['lines'] ?? []);
+					inv_sync_account_balance($mysqli, (string)($invoiceBase['billing_account_id'] ?? ''));
+					$flash = $updatedCount > 0 ? 'Positionen gespeichert, Rechnung neu berechnet und Firmensaldo synchronisiert.' : 'Keine Positionsänderung erkannt.';
+				} elseif ($action === 'sync_from_order') {
+					$salesOrderId = trim((string)($invoiceBase['from_so_id'] ?? ''));
+					if ($salesOrderId === '') {
+						throw new RuntimeException('Keine verknüpfte AB vorhanden.');
+					}
+					inv_sync_from_sales_order($mysqli, $invoiceId, $salesOrderId);
+					inv_sync_account_balance($mysqli, (string)($invoiceBase['billing_account_id'] ?? ''));
+					$flash = 'Rechnung wurde aus der verknüpften AB übernommen und der Firmensaldo wurde synchronisiert.';
+				} elseif ($action === 'sync_account_balance') {
+					inv_recalculate_totals($mysqli, $invoiceId);
+					inv_sync_account_balance($mysqli, (string)($invoiceBase['billing_account_id'] ?? ''));
+					$flash = 'Rechnungssummen und Firmensaldo wurden synchronisiert.';
+				}
+				$mysqli->commit();
+			} catch (Throwable $e) {
+				$mysqli->rollback();
+				$errors[] = $e->getMessage();
+			}
+		}
+	}
+}
+
 $invoice = null;
 $invoiceLines = [];
+$invoiceComments = [];
 $payments = [];
 $linkedQuotes = [];
 $linkedOrders = [];
@@ -196,13 +734,25 @@ if ($invoiceId !== '') {
 	);
 	$invoice = $rows[0] ?? null;
 
-	if ($invoice) {
-		$invoiceLines = inv_fetch_all(
-			$mysqli,
-			"SELECT id, line_group_id, position, name, quantity, unit_price, ext_price, net_price
-			 FROM invoice_lines
-			 WHERE deleted = 0 AND invoice_id = ?
-			 ORDER BY line_group_id ASC, position ASC, date_entered ASC",
+		if ($invoice) {
+			$invoiceComments = inv_fetch_all(
+				$mysqli,
+				"SELECT id, position, name, body
+				 FROM invoice_comments
+				 WHERE deleted = 0 AND invoice_id = ?
+				 ORDER BY position ASC, id ASC",
+				's',
+				[$invoiceId]
+			);
+
+			$invoiceLines = inv_fetch_all(
+				$mysqli,
+			"SELECT il.id, il.line_group_id, il.position, il.name, il.quantity, il.list_price, il.unit_price, il.ext_price, il.net_price,
+			        il.pricing_adjust_id, ia.type AS discount_type, ia.rate AS discount_rate
+			 FROM invoice_lines il
+			 LEFT JOIN invoice_adjustments ia ON ia.id = il.pricing_adjust_id AND ia.deleted = 0
+			 WHERE il.deleted = 0 AND il.invoice_id = ?
+			 ORDER BY il.line_group_id ASC, il.position ASC, il.date_entered ASC",
 			's',
 			[$invoiceId]
 		);
@@ -382,6 +932,13 @@ $invoiceCode = trim((string)($invoice['prefix'] ?? '') . (string)($invoice['invo
 		<?php elseif (!$invoice): ?>
 			<div class="alert alert-warning">Keine Rechnung mit dieser ID gefunden.</div>
 		<?php else: ?>
+			<?php if ($flash !== ''): ?>
+				<div class="alert alert-success"><?php echo htmlspecialchars($flash); ?></div>
+			<?php endif; ?>
+			<?php foreach ($errors as $err): ?>
+				<div class="alert alert-danger"><?php echo htmlspecialchars((string)$err); ?></div>
+			<?php endforeach; ?>
+
 			<div class="card shadow-sm mb-3">
 				<div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
 					<div>
@@ -427,6 +984,38 @@ $invoiceCode = trim((string)($invoice['prefix'] ?? '') . (string)($invoice['invo
 						<div class="small text-muted mb-1">Beschreibung</div>
 						<div><?php echo nl2br(htmlspecialchars((string)$invoice['description'])); ?></div>
 					<?php endif; ?>
+				</div>
+			</div>
+
+			<div class="card shadow-sm mb-3">
+				<div class="card-header"><strong>Aktionen</strong></div>
+				<div class="card-body">
+					<div class="d-flex flex-wrap gap-2">
+						<form method="post" class="m-0">
+							<input type="hidden" name="invoice_id" value="<?php echo htmlspecialchars($invoiceId); ?>">
+							<input type="hidden" name="action" value="sync_account_balance">
+							<button type="submit" class="btn btn-sm btn-outline-secondary">
+								<i class="fas fa-sync-alt me-1"></i> Rechnung + Firmensaldo synchronisieren
+							</button>
+						</form>
+						<?php if (trim((string)($invoice['from_so_id'] ?? '')) !== ''): ?>
+							<form method="post" class="m-0" onsubmit="return confirm('Rechnung wirklich aus der verknüpften AB neu übernehmen? Manuelle Positionsänderungen auf dieser Rechnung werden überschrieben.');">
+								<input type="hidden" name="invoice_id" value="<?php echo htmlspecialchars($invoiceId); ?>">
+								<input type="hidden" name="action" value="sync_from_order">
+								<button type="submit" class="btn btn-sm btn-warning">
+									<i class="fas fa-file-import me-1"></i> Positionen aus AB übernehmen
+								</button>
+							</form>
+						<?php endif; ?>
+						<a class="btn btn-sm btn-outline-primary" href="<?php echo '../update_invoice.php?invoice_id=' . urlencode((string)$invoice['id']); ?>">
+							<i class="fas fa-tools me-1"></i> Erweiterte Zahlungs-/Saldoansicht
+						</a>
+						<?php if (trim((string)($invoice['billing_account_id'] ?? '')) !== ''): ?>
+							<a class="btn btn-sm btn-outline-primary" href="<?php echo '../offene_betraege_pruefung.php?account_id=' . urlencode((string)$invoice['billing_account_id']); ?>">
+								<i class="fas fa-balance-scale me-1"></i> Konto-Prüfung öffnen
+							</a>
+						<?php endif; ?>
+					</div>
 				</div>
 			</div>
 
@@ -488,13 +1077,18 @@ $invoiceCode = trim((string)($invoice['prefix'] ?? '') . (string)($invoice['invo
 			<div class="card shadow-sm mb-3">
 				<div class="card-header"><strong>Positionen</strong> <span class="text-muted">(<?php echo count($invoiceLines); ?>)</span></div>
 				<div class="card-body">
-					<div class="table-responsive">
-						<table class="table table-sm table-striped align-middle">
+					<form method="post">
+						<input type="hidden" name="invoice_id" value="<?php echo htmlspecialchars($invoiceId); ?>">
+						<input type="hidden" name="action" value="save_positions">
+						<div class="table-responsive">
+							<table class="table table-sm table-striped align-middle">
 							<thead>
 								<tr>
 									<th>#</th>
 									<th>Bezeichnung</th>
 									<th class="text-end">Menge</th>
+									<th class="text-end">Listenpreis</th>
+									<th class="text-end">Rabatt %</th>
 									<th class="text-end">Einzelpreis</th>
 									<th class="text-end">Gesamt</th>
 									<th class="text-end">Netto</th>
@@ -504,19 +1098,54 @@ $invoiceCode = trim((string)($invoice['prefix'] ?? '') . (string)($invoice['invo
 								<?php foreach ($invoiceLines as $idx => $line): ?>
 									<tr>
 										<td><?php echo (int)$idx + 1; ?></td>
-										<td><?php echo htmlspecialchars((string)($line['name'] ?? '')); ?></td>
-										<td class="text-end"><?php echo isset($line['quantity']) ? number_format((float)$line['quantity'], 2, ',', '.') : ''; ?></td>
+										<td>
+											<input type="text" class="form-control form-control-sm" name="lines[<?php echo htmlspecialchars((string)$line['id']); ?>][name]" value="<?php echo htmlspecialchars((string)($line['name'] ?? '')); ?>">
+										</td>
+										<td class="text-end">
+											<input type="text" class="form-control form-control-sm text-end" name="lines[<?php echo htmlspecialchars((string)$line['id']); ?>][quantity]" value="<?php echo isset($line['quantity']) ? htmlspecialchars(number_format((float)$line['quantity'], 2, ',', '.')) : ''; ?>">
+										</td>
+										<td class="text-end">
+											<input type="text" class="form-control form-control-sm text-end" name="lines[<?php echo htmlspecialchars((string)$line['id']); ?>][list_price]" value="<?php echo isset($line['list_price']) ? htmlspecialchars(number_format((float)$line['list_price'], 2, ',', '.')) : ''; ?>">
+										</td>
+										<td class="text-end">
+											<input type="text" class="form-control form-control-sm text-end" name="lines[<?php echo htmlspecialchars((string)$line['id']); ?>][discount_rate]" value="<?php echo isset($line['discount_rate']) && ($line['discount_type'] === 'PercentDiscount' || $line['discount_type'] === 'FixedDiscount' || $line['discount_type'] === 'Fixed') ? htmlspecialchars(number_format((float)$line['discount_rate'], 2, ',', '.')) : ''; ?>">
+										</td>
 										<td class="text-end"><?php echo isset($line['unit_price']) ? number_format((float)$line['unit_price'], 2, ',', '.') : ''; ?></td>
 										<td class="text-end"><?php echo isset($line['ext_price']) ? number_format((float)$line['ext_price'], 2, ',', '.') : ''; ?></td>
 										<td class="text-end"><?php echo isset($line['net_price']) ? number_format((float)$line['net_price'], 2, ',', '.') : ''; ?></td>
 									</tr>
 								<?php endforeach; ?>
 								<?php if (!$invoiceLines): ?>
-									<tr><td colspan="6" class="text-muted">Keine Positionen gefunden.</td></tr>
+									<tr><td colspan="8" class="text-muted">Keine Positionen gefunden.</td></tr>
 								<?php endif; ?>
 							</tbody>
-						</table>
-					</div>
+							</table>
+						</div>
+						<div class="d-flex justify-content-between flex-wrap gap-2">
+							<div class="small text-muted">Änderbar: Bezeichnung, Menge, Listenpreis und Rabatt. Danach werden Rechnungsbetrag, Offenbetrag und Firmensaldo neu berechnet.</div>
+							<button type="submit" class="btn btn-sm btn-primary">
+								<i class="fas fa-save me-1"></i> Positionen speichern
+							</button>
+						</div>
+					</form>
+				</div>
+			</div>
+
+			<div class="card shadow-sm mb-3">
+				<div class="card-header"><strong>Kommentare</strong> <span class="text-muted">(<?php echo count($invoiceComments); ?>)</span></div>
+				<div class="card-body">
+					<?php if ($invoiceComments): ?>
+						<ul class="list-group list-group-flush">
+							<?php foreach ($invoiceComments as $comment): ?>
+								<li class="list-group-item px-0">
+									<div class="small text-muted">Pos. <?php echo (int)($comment['position'] ?? 0); ?></div>
+									<div><?php echo nl2br(htmlspecialchars((string)($comment['body'] ?? ''))); ?></div>
+								</li>
+							<?php endforeach; ?>
+						</ul>
+					<?php else: ?>
+						<div class="text-muted">Keine Kommentare gefunden.</div>
+					<?php endif; ?>
 				</div>
 			</div>
 

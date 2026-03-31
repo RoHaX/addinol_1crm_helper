@@ -1180,7 +1180,7 @@ class JobService
 				net_amount, net_amount_usdollar
 			) VALUES (
 				" . $esc($invoiceId) . ", " . $esc($now) . ", " . $esc($now) . ", " . $esc($salesOrder['modified_user_id'] ?? null) . ", " . $esc($salesOrder['assigned_user_id'] ?? null) . ", " . $esc($salesOrder['created_by'] ?? null) . ", 0,
-					" . $esc($salesOrder['currency_id'] ?? '-99') . ", " . $num($salesOrder['exchange_rate'] ?? 1) . ", " . $esc($invoicePrefix) . ", " . $invoiceNumber . ", " . $esc($salesOrderId) . ", " . $esc($deliveredStage) . ", 0, 0,
+					" . $esc($salesOrder['currency_id'] ?? '-99') . ", " . $num($salesOrder['exchange_rate'] ?? 1) . ", " . $esc($invoicePrefix) . ", " . $invoiceNumber . ", " . $esc($salesOrderId) . ", " . $esc($deliveredStage) . ", 0, " . $intVal($salesOrder['products_created'] ?? 1) . ",
 				" . $esc($salesOrder['name'] ?? '') . ", " . $esc($salesOrder['opportunity_id'] ?? null) . ", " . $esc($salesOrder['purchase_order_num'] ?? null) . ", " . $esc($today) . ", " . $esc($dueDate) . ", " . $esc($salesOrder['partner_id'] ?? null) . ", " . $esc($salesOrder['billing_account_id'] ?? null) . ", " . $esc($salesOrder['billing_contact_id'] ?? null) . ",
 				" . $esc($salesOrder['billing_address_street'] ?? null) . ", " . $esc($salesOrder['billing_address_city'] ?? null) . ", " . $esc($salesOrder['billing_address_state'] ?? null) . ", " . $esc($salesOrder['billing_address_postalcode'] ?? null) . ", " . $esc($salesOrder['billing_address_country'] ?? null) . ",
 				" . $esc($salesOrder['shipping_account_id'] ?? null) . ", " . $esc($salesOrder['shipping_contact_id'] ?? null) . ", " . $esc($salesOrder['shipping_address_street'] ?? null) . ", " . $esc($salesOrder['shipping_address_city'] ?? null) . ", " . $esc($salesOrder['shipping_address_state'] ?? null) . ",
@@ -1217,7 +1217,49 @@ class JobService
 				}
 			}
 
+			$commentMap = [];
+			$commentParentMap = [];
+			$commentsStmt = $db->prepare('SELECT * FROM sales_order_comments WHERE sales_orders_id = ? AND deleted = 0 ORDER BY position ASC, id ASC');
+			if ($commentsStmt) {
+				$commentsStmt->bind_param('s', $salesOrderId);
+				$commentsStmt->execute();
+				$commentsRes = $commentsStmt->get_result();
+				while ($c = $commentsRes->fetch_assoc()) {
+					$newCommentId = self::generateGuid();
+					$oldGroupId = (string)($c['line_group_id'] ?? '');
+					$newGroupId = $groupMap[$oldGroupId] ?? $oldGroupId;
+					$insertCommentSql = "INSERT INTO invoice_comments
+						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, name, position, parent_id, body)
+						VALUES (
+							" . $esc($newCommentId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ", " . $esc($newGroupId) . ",
+							" . $esc($c['name'] ?? null) . ", " . $num($c['position'] ?? null) . ", NULL, " . $esc($c['body'] ?? null) . "
+						)";
+					if (!$db->query($insertCommentSql)) {
+						throw new RuntimeException('comment insert failed: ' . $db->error);
+					}
+					$oldCommentId = (string)($c['id'] ?? '');
+					$commentMap[$oldCommentId] = $newCommentId;
+					$commentParentMap[$oldCommentId] = trim((string)($c['parent_id'] ?? ''));
+				}
+			}
+
+			foreach ($commentParentMap as $oldCommentId => $oldParentId) {
+				if ($oldParentId === '' || !isset($commentMap[$oldCommentId]) || !isset($commentMap[$oldParentId])) {
+					continue;
+				}
+				$newCommentId = $commentMap[$oldCommentId];
+				$newParentId = $commentMap[$oldParentId];
+				$updateCommentSql = "UPDATE invoice_comments
+					SET parent_id = " . $esc($newParentId) . "
+					WHERE id = " . $esc($newCommentId) . " AND invoice_id = " . $esc($invoiceId) . " AND deleted = 0
+					LIMIT 1";
+				if (!$db->query($updateCommentSql)) {
+					throw new RuntimeException('comment parent update failed: ' . $db->error);
+				}
+			}
+
 			$lineMap = [];
+			$lineAdjustMap = [];
 				$linesStmt = $db->prepare('SELECT * FROM sales_order_lines WHERE sales_orders_id = ? AND deleted = 0 ORDER BY line_group_id ASC, position ASC, id ASC');
 				if ($linesStmt) {
 					$linesStmt->bind_param('s', $salesOrderId);
@@ -1228,21 +1270,24 @@ class JobService
 					$oldGroupId = (string)($l['line_group_id'] ?? '');
 					$newGroupId = $groupMap[$oldGroupId] ?? $oldGroupId;
 					$insertLineSql = "INSERT INTO invoice_lines
-						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, pricing_adjust_id, name, position, parent_id, quantity, ext_quantity, related_type, related_id, mfr_part_no, serial_no, serial_numbers, tax_class_id, sum_of_components, cost_price, cost_price_usd, list_price, list_price_usd, unit_price, unit_price_usd, std_unit_price, std_unit_price_usd, ext_price, ext_price_usd, net_price, net_price_usd)
+						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, pricing_adjust_id, name, position, parent_id, quantity, ext_quantity, related_type, related_id, mfr_part_no, serial_no, serial_numbers, tax_class_id, sum_of_components, cost_price, cost_price_usd, list_price, list_price_usd, unit_price, unit_price_usd, std_unit_price, std_unit_price_usd, ext_price, ext_price_usd, net_price, net_price_usd, pp_lineitem_id, date_from, date_to)
 						VALUES (
 							" . $esc($newLineId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ", " . $esc($newGroupId) . ", " . $esc($l['pricing_adjust_id'] ?? null) . ",
 							" . $esc($l['name'] ?? null) . ", " . $num($l['position'] ?? null) . ", " . $esc($l['parent_id'] ?? null) . ", " . $num($l['quantity'] ?? null) . ", " . $num($l['ext_quantity'] ?? null) . ",
 							" . $esc($l['related_type'] ?? null) . ", " . $esc($l['related_id'] ?? null) . ", " . $esc($l['mfr_part_no'] ?? null) . ", " . $esc($l['serial_no'] ?? null) . ", " . $esc($l['serial_numbers'] ?? null) . ", " . $esc($l['tax_class_id'] ?? null) . ",
 							" . $intVal($l['sum_of_components'] ?? 0) . ", " . $num($l['cost_price'] ?? null) . ", " . $num($l['cost_price_usd'] ?? null) . ", " . $num($l['list_price'] ?? null) . ", " . $num($l['list_price_usd'] ?? null) . ", " . $num($l['unit_price'] ?? null) . ", " . $num($l['unit_price_usd'] ?? null) . ",
-							" . $num($l['std_unit_price'] ?? null) . ", " . $num($l['std_unit_price_usd'] ?? null) . ", " . $num($l['ext_price'] ?? null) . ", " . $num($l['ext_price_usd'] ?? null) . ", " . $num($l['net_price'] ?? null) . ", " . $num($l['net_price_usd'] ?? null) . "
+							" . $num($l['std_unit_price'] ?? null) . ", " . $num($l['std_unit_price_usd'] ?? null) . ", " . $num($l['ext_price'] ?? null) . ", " . $num($l['ext_price_usd'] ?? null) . ", " . $num($l['net_price'] ?? null) . ", " . $num($l['net_price_usd'] ?? null) . ",
+							" . $esc($l['id'] ?? null) . ", NULL, NULL
 						)";
 					if (!$db->query($insertLineSql)) {
 						throw new RuntimeException('line insert failed: ' . $db->error);
 					}
 					$lineMap[(string)$l['id']] = $newLineId;
+					$lineAdjustMap[(string)$l['id']] = trim((string)($l['pricing_adjust_id'] ?? ''));
 				}
 			}
 
+				$adjustMap = [];
 				$adjStmt = $db->prepare('SELECT * FROM sales_order_adjustments WHERE sales_orders_id = ? AND deleted = 0 ORDER BY line_group_id ASC, position ASC, id ASC');
 				if ($adjStmt) {
 					$adjStmt->bind_param('s', $salesOrderId);
@@ -1255,14 +1300,30 @@ class JobService
 					$oldLineId = trim((string)($a['line_id'] ?? ''));
 					$newLineId = $oldLineId !== '' ? ($lineMap[$oldLineId] ?? null) : null;
 					$insertAdjSql = "INSERT INTO invoice_adjustments
-						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, line_id, name, position, related_type, related_id, rate, type, amount, amount_usd, tax_class_id)
+						(id, date_entered, date_modified, deleted, invoice_id, line_group_id, line_id, name, position, related_type, related_id, rate, type, amount, amount_usd, tax_class_id, pp_lineadjust_id)
 						VALUES (
 							" . $esc($newAdjId) . ", " . $esc($now) . ", " . $esc($now) . ", 0, " . $esc($invoiceId) . ", " . $esc($newGroupId) . ", " . $esc($newLineId) . ",
-							" . $esc($a['name'] ?? null) . ", " . $num($a['position'] ?? null) . ", " . $esc($a['related_type'] ?? null) . ", " . $esc($a['related_id'] ?? null) . ", " . $num($a['rate'] ?? null) . ", " . $esc($a['type'] ?? null) . ", " . $num($a['amount'] ?? null) . ", " . $num($a['amount_usd'] ?? null) . ", " . $esc($a['tax_class_id'] ?? null) . "
+							" . $esc($a['name'] ?? null) . ", " . $num($a['position'] ?? null) . ", " . $esc($a['related_type'] ?? null) . ", " . $esc($a['related_id'] ?? null) . ", " . $num($a['rate'] ?? null) . ", " . $esc($a['type'] ?? null) . ", " . $num($a['amount'] ?? null) . ", " . $num($a['amount_usd'] ?? null) . ", " . $esc($a['tax_class_id'] ?? null) . ", " . $esc($a['id'] ?? null) . "
 						)";
 					if (!$db->query($insertAdjSql)) {
 						throw new RuntimeException('adjustment insert failed: ' . $db->error);
 					}
+					$adjustMap[(string)$a['id']] = $newAdjId;
+				}
+			}
+
+			foreach ($lineMap as $oldLineId => $newLineId) {
+				$oldAdjustId = $lineAdjustMap[$oldLineId] ?? '';
+				if ($oldAdjustId === '' || !isset($adjustMap[$oldAdjustId])) {
+					continue;
+				}
+				$newAdjustId = $adjustMap[$oldAdjustId];
+				$updateLineSql = "UPDATE invoice_lines
+					SET pricing_adjust_id = " . $esc($newAdjustId) . "
+					WHERE id = " . $esc($newLineId) . " AND invoice_id = " . $esc($invoiceId) . " AND deleted = 0
+					LIMIT 1";
+				if (!$db->query($updateLineSql)) {
+					throw new RuntimeException('line pricing_adjust update failed: ' . $db->error);
 				}
 			}
 
