@@ -78,6 +78,108 @@ function inv_sync_account_balance(mysqli $db, string $accountId): void {
 	}
 }
 
+function inv_delete_invoice(mysqli $db, array $invoiceBase): array {
+	$invoiceId = trim((string)($invoiceBase['id'] ?? ''));
+	$accountId = trim((string)($invoiceBase['billing_account_id'] ?? ''));
+	$prefix = trim((string)($invoiceBase['prefix'] ?? ''));
+	$invoiceNumber = (int)($invoiceBase['invoice_number'] ?? 0);
+	if ($invoiceId === '' || $invoiceNumber <= 0) {
+		throw new RuntimeException('Rechnung konnte nicht gelöscht werden: unvollständige Daten.');
+	}
+
+	$linkedPaymentCountRow = inv_fetch_one(
+		$db,
+		"SELECT COUNT(*) AS cnt
+		 FROM invoices_payments
+		 WHERE invoice_id = ? AND deleted = 0",
+		's',
+		[$invoiceId]
+	);
+	$linkedPaymentCount = (int)($linkedPaymentCountRow['cnt'] ?? 0);
+
+	$statements = [
+		['sql' => "UPDATE invoice_lines SET deleted = 1, date_modified = NOW() WHERE invoice_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE invoice_line_groups SET deleted = 1, date_modified = NOW() WHERE parent_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE invoice_adjustments SET deleted = 1, date_modified = NOW() WHERE invoice_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE invoice_comments SET deleted = 1, date_modified = NOW() WHERE invoice_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE invoices_payments SET deleted = 1, date_modified = NOW() WHERE invoice_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE payments SET related_invoice_id = NULL, date_modified = NOW() WHERE related_invoice_id = ?", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE emails_invoices SET deleted = 1, date_modified = NOW() WHERE invoice_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE securitygroups_records SET deleted = 1, date_modified = NOW() WHERE module = 'Invoice' AND record_id = ? AND deleted = 0", 'types' => 's', 'params' => [$invoiceId]],
+		['sql' => "UPDATE invoice SET deleted = 1, date_modified = NOW() WHERE id = ? AND deleted = 0 LIMIT 1", 'types' => 's', 'params' => [$invoiceId]],
+	];
+
+	foreach ($statements as $entry) {
+		$stmt = $db->prepare($entry['sql']);
+		if (!$stmt) {
+			throw new RuntimeException('Delete-Statement konnte nicht vorbereitet werden.');
+		}
+		$stmt->bind_param($entry['types'], ...$entry['params']);
+		if (!$stmt->execute()) {
+			$error = $stmt->error;
+			$stmt->close();
+			throw new RuntimeException('Rechnung konnte nicht gelöscht werden: ' . $error);
+		}
+		$stmt->close();
+	}
+
+	inv_sync_account_balance($db, $accountId);
+
+	$sequenceInfo = [
+		'rewound' => false,
+		'freed_automatically' => false,
+		'old_sequence' => null,
+		'new_sequence' => null,
+		'payment_links_removed' => $linkedPaymentCount,
+	];
+
+	$sequenceRow = inv_fetch_one(
+		$db,
+		"SELECT value
+		 FROM config
+		 WHERE category = 'company' AND name = 'invoice_number_sequence'
+		 LIMIT 1"
+	);
+	$currentSequence = isset($sequenceRow['value']) ? (int)$sequenceRow['value'] : 0;
+	$maxRemainingRow = inv_fetch_one(
+		$db,
+		"SELECT MAX(invoice_number) AS max_no
+		 FROM invoice
+		 WHERE deleted = 0 AND prefix = ?",
+		's',
+		[$prefix]
+	);
+	$maxRemaining = (int)($maxRemainingRow['max_no'] ?? 0);
+
+	if ($currentSequence === ($invoiceNumber + 1) && $maxRemaining === ($invoiceNumber - 1)) {
+		$newSequence = $invoiceNumber;
+		$stmt = $db->prepare(
+			"UPDATE config
+			 SET value = ?
+			 WHERE category = 'company' AND name = 'invoice_number_sequence'
+			 LIMIT 1"
+		);
+		if (!$stmt) {
+			throw new RuntimeException('Rechnungssequenz konnte nicht vorbereitet werden.');
+		}
+		$newSequenceValue = (string)$newSequence;
+		$stmt->bind_param('s', $newSequenceValue);
+		if (!$stmt->execute()) {
+			$error = $stmt->error;
+			$stmt->close();
+			throw new RuntimeException('Rechnungssequenz konnte nicht zurückgesetzt werden: ' . $error);
+		}
+		$stmt->close();
+
+		$sequenceInfo['rewound'] = true;
+		$sequenceInfo['freed_automatically'] = true;
+		$sequenceInfo['old_sequence'] = $currentSequence;
+		$sequenceInfo['new_sequence'] = $newSequence;
+	}
+
+	return $sequenceInfo;
+}
+
 function inv_recalculate_totals(mysqli $db, string $invoiceId): void {
 	$groups = inv_fetch_all(
 		$db,
@@ -667,7 +769,7 @@ if ($requestMethod === 'POST') {
 	if ($invoiceId !== '') {
 		$invoiceBase = inv_fetch_one(
 			$mysqli,
-			"SELECT id, from_so_id, billing_account_id
+			"SELECT id, from_so_id, billing_account_id, prefix, invoice_number
 			 FROM invoice
 			 WHERE deleted = 0 AND id = ?
 			 LIMIT 1",
@@ -695,6 +797,20 @@ if ($requestMethod === 'POST') {
 					inv_recalculate_totals($mysqli, $invoiceId);
 					inv_sync_account_balance($mysqli, (string)($invoiceBase['billing_account_id'] ?? ''));
 					$flash = 'Rechnungssummen und Firmensaldo wurden synchronisiert.';
+				} elseif ($action === 'delete_invoice') {
+					$deleteInfo = inv_delete_invoice($mysqli, $invoiceBase);
+					$invoiceCode = trim((string)($invoiceBase['prefix'] ?? '') . (string)($invoiceBase['invoice_number'] ?? ''));
+					$flash = 'Rechnung ' . $invoiceCode . ' wurde gelöscht.';
+					if (($deleteInfo['payment_links_removed'] ?? 0) > 0) {
+						$flash .= ' Verknüpfte Zahlungen wurden von der Rechnung gelöst.';
+					}
+					if (!empty($deleteInfo['freed_automatically'])) {
+						$flash .= ' Die Rechnungsnummer ist für den nächsten neu erzeugten Beleg wieder frei.';
+					} else {
+						$flash .= ' Die Nummer wurde nicht automatisch in die 1CRM-Sequenz zurückgesetzt, weil sie nicht der letzte freie Folgewert der aktuellen Reihe war.';
+					}
+					$invoiceId = '';
+					$invoice = null;
 				}
 				$mysqli->commit();
 			} catch (Throwable $e) {
@@ -1015,6 +1131,13 @@ $invoiceCode = trim((string)($invoice['prefix'] ?? '') . (string)($invoice['invo
 								<i class="fas fa-balance-scale me-1"></i> Konto-Prüfung öffnen
 							</a>
 						<?php endif; ?>
+						<form method="post" class="m-0" onsubmit="return confirm('Rechnung wirklich löschen? Positionen und Verknüpfungen werden deaktiviert. Die Rechnungsnummer wird nur dann automatisch wieder freigegeben, wenn es die letzte Nummer der aktuellen Reihe ist.');">
+							<input type="hidden" name="invoice_id" value="<?php echo htmlspecialchars($invoiceId); ?>">
+							<input type="hidden" name="action" value="delete_invoice">
+							<button type="submit" class="btn btn-sm btn-outline-danger">
+								<i class="fas fa-trash-alt me-1"></i> Rechnung löschen
+							</button>
+						</form>
 					</div>
 				</div>
 			</div>
